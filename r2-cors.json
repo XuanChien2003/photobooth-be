@@ -1,0 +1,9 @@
+[
+  {
+    "AllowedOrigins": ["https://studio.selfbooth.workers.dev", "http://localhost:5173"],
+    "AllowedMethods": ["GET", "HEAD", "PUT"],
+    "AllowedHeaders": ["Range", "Content-Type"],
+    "ExposeHeaders": ["Content-Length", "Content-Type", "Content-Range"],
+    "MaxAgeSeconds": 3600
+  }
+]

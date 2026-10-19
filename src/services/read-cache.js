@@ -1,0 +1,40 @@
+// Small in-process caches for data read on almost every request but changed rarely. On the free
+// plans the database is far from the server (each query crosses an ocean), so skipping a read
+// saves a whole round trip. Model hooks clear a cache on every write made through Mongoose in
+// this process (the only process); a short lifetime covers anything edited elsewhere.
+export function createReadCache({ ttl = 60_000, max = 200 } = {}) {
+  const entries = new Map();
+  let generation = 0;
+  return {
+    async get(key, load) {
+      const hit = entries.get(key);
+      if (hit && hit.expires > Date.now()) return hit.value;
+      const started = generation;
+      const value = await load();
+      // A write that happened while loading may not be in this result: do not keep it.
+      if (started === generation) {
+        if (entries.size >= max) entries.delete(entries.keys().next().value);
+        entries.set(key, { value, expires: Date.now() + ttl });
+      }
+      return value;
+    },
+    clear() {
+      generation++;
+      entries.clear();
+    },
+  };
+}
+
+const WRITES = [
+  "save", "insertMany", "updateOne", "updateMany", "findOneAndUpdate", "replaceOne",
+  "deleteOne", "deleteMany", "findOneAndDelete", "findOneAndReplace", "bulkWrite",
+];
+// Clear `cache` after any write made through the given schemas (register before compiling the
+// model). A read that started before the write finished is never stored (see get()).
+export function clearOnWrite(cache, schema) {
+  for (const op of WRITES) schema.post(op, () => cache.clear());
+}
+
+// Catalog: rooms, packages, frames and studio settings. Users: the session check of every admin request.
+export const catalogCache = createReadCache({ ttl: 60_000, max: 4 });
+export const userCache = createReadCache({ ttl: 60_000, max: 100 });

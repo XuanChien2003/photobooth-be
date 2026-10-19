@@ -1,0 +1,295 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import mongoose from "mongoose";
+import { pipeline } from "node:stream/promises";
+import { config } from "../config.js";
+import {
+  isR2File,
+  mediaReference,
+  r2Storage,
+  validateMediaStorage,
+} from "./r2.js";
+import Booking from "../models/Booking.js";
+import PrintJob from "../models/PrintJob.js";
+
+// New files use the configured store; opaque r2: references keep older GridFS
+// files readable throughout the transition. Never use ephemeral disk for writes.
+export const MEDIA_TTL_MS =
+  Number(process.env.MEDIA_TTL_HOURS || 24) * 60 * 60 * 1000;
+const buckets = new WeakMap();
+const bucket = () => {
+  const db = mongoose.connection.db;
+  let current = buckets.get(db);
+  if (!current) {
+    current = new mongoose.mongo.GridFSBucket(db, { bucketName: "media" });
+    buckets.set(db, current);
+  }
+  return current;
+};
+
+export async function saveMedia(file, buffer, contentType) {
+  file = mediaReference(file);
+  if (isR2File(file)) {
+    await r2Storage.save(file, buffer, contentType);
+    return file;
+  }
+  await new Promise((resolve, reject) => {
+    const upload = bucket().openUploadStream(file, {
+      metadata: { contentType },
+    });
+    upload.once("error", reject).once("finish", resolve);
+    upload.end(buffer);
+  });
+  return file;
+}
+
+export async function readMedia(file) {
+  if (isR2File(file)) return r2Storage.read(file);
+  const [info] = await bucket().find({ filename: file }).limit(1).toArray();
+  if (!info)
+    return fs.readFile(path.join(config.uploadDir, file)).catch(() => null);
+  const chunks = [];
+  for await (const chunk of bucket().openDownloadStream(info._id))
+    chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
+export async function deleteMedia(files) {
+  const unique = [...new Set(files.filter(Boolean))];
+  const remote = unique.filter(isR2File);
+  // Batch remote deletes; partial failures retain refs for the next TTL retry.
+  if (remote.length) await r2Storage.deleteMany(remote);
+  for (const file of unique.filter((name) => !isR2File(name))) {
+    const b = bucket();
+    const found = await b.find({ filename: file }).toArray();
+    await Promise.all(found.map((f) => b.delete(f._id)));
+    // Dọn cả file cũ còn trên ổ đĩa (dữ liệu trước khi chuyển sang GridFS).
+    await fs.unlink(path.join(config.uploadDir, file)).catch(() => {});
+  }
+}
+
+const LINK_WINDOW_MS = 120_000, LINK_MAX_SECONDS = 300, LINK_MARGIN_SECONDS = 15;
+
+// Links are signed for a fixed 2-minute window, so every request in that window gets the very
+// same URL: the browser reuses the cached redirect and image bytes (gallery revisits, editor ↔
+// gallery) instead of asking Render and R2 again. A link never outlives the photo.
+function linkWindow(expiresAt, now) {
+  let signedAt = Math.floor(now / LINK_WINDOW_MS) * LINK_WINDOW_MS;
+  let seconds = Math.min(LINK_MAX_SECONDS, Math.floor((Number(expiresAt) - signedAt) / 1000));
+  const fresh = Math.floor((signedAt + seconds * 1000 - now) / 1000) - LINK_MARGIN_SECONDS;
+  if (fresh <= 0) {
+    // Photo about to expire: a one-off link, not cached.
+    signedAt = now;
+    seconds = Math.min(LINK_MAX_SECONDS, Math.floor((Number(expiresAt) - now) / 1000));
+  }
+  return { signedAt, seconds, fresh };
+}
+const signLink = (file, { signedAt, seconds }, contentType, disposition) =>
+  r2Storage.signedGet(file, seconds, {
+    ...(contentType && { ResponseContentType: contentType }),
+    ...(disposition && { ResponseContentDisposition: disposition }),
+    ResponseCacheControl: `private, max-age=${seconds}`,
+  }, new Date(signedAt));
+
+// The stored file behind each size of /albums/:token/photos/:id?size=… (and the album's links).
+export function photoFile(p, size) {
+  switch (size) {
+    case "thumbnail": return p.thumbnailFile || p.file;
+    case "preview": return p.previewFile || p.thumbnailFile || p.file;
+    // Ảnh cũ chưa có nguồn in: trả ảnh gốc (máy khách chỉ xin size=print khi printSource).
+    case "print": return p.printFile || p.file;
+    default: return p.file;
+  }
+}
+
+// The album sends each photo's storage links with the photo list, so the gallery, the editor and
+// print composition load straight from R2 instead of one server round trip (a 302 or a JSON link)
+// per image. They are the very URLs /photos/:id?size=…&direct=1 redirects to in the same window,
+// so either path reuses the other's cached bytes. Album polls in one window revalidate to an
+// empty 304, so carrying all four costs a few KB only when the window changes.
+// Legacy GridFS photos and photos about to expire get no links.
+const LINKED_SIZES = ["thumbnail", "preview", "print", "original"];
+export async function photoLinks(p, now = Date.now()) {
+  if (!p || !isR2File(p.file)) return undefined;
+  const window = linkWindow(photoExpiry(p), now);
+  if (window.fresh <= 0 || window.seconds <= 0) return undefined;
+  const links = { until: new Date(window.signedAt + window.seconds * 1000) };
+  for (const size of LINKED_SIZES) {
+    // No print source yet: the page prints from the original (printSource: false).
+    if (size === "print" && !p.printFile) continue;
+    const file = photoFile(p, size);
+    if (isR2File(file)) links[size] = await signLink(file, window, "image/jpeg");
+  }
+  return links;
+}
+
+// Gửi file cho client, hỗ trợ Range để trình duyệt tua/phát video.
+export async function sendMedia(req, res, file, contentType, expiresAt) {
+  const remote = isR2File(file);
+  // Only authenticated routes supply an expiry. The bucket remains private;
+  // each link authorizes one file for at most five minutes, within its TTL.
+  // HEAD/Range and older clients keep the streaming path below.
+  if (remote && req.method === "GET" && !req.headers.range &&
+      ["1", "link"].includes(req.query.direct) && expiresAt) {
+    const window = linkWindow(expiresAt, Date.now());
+    const { seconds, fresh } = window;
+    if (seconds > 0) {
+      const location = await signLink(file, window, contentType, res.getHeader("Content-Disposition"));
+      res.set("Cache-Control", fresh > 0 ? `private, max-age=${fresh}` : "private, no-store");
+      // Canvas fetches request a JSON link and fetch R2 themselves. Following a
+      // redirect across API + storage origins can change the CORS Origin to null.
+      if (req.query.direct === "link") {
+        res.removeHeader("Content-Disposition");
+        return res.type("application/json").json({ url: location });
+      }
+      return res.redirect(302, location);
+    }
+  }
+  // Tải trọn tệp trên R2 (không Range, không HEAD): lệnh GET đã kèm kích thước và loại tệp nên bỏ
+  // lệnh HEAD riêng — mỗi ảnh bớt một vòng đi về tới R2 (thư viện mở hàng chục ảnh nhỏ một lúc).
+  if (remote && req.method !== "HEAD" && !req.headers.range) {
+    const data = await r2Storage.get(file);
+    if (!data)
+      return res.status(404).json({ message: "Ảnh/video đã hết hạn lưu trữ." });
+    res.type(contentType || data.ContentType || "application/octet-stream");
+    res.set("Accept-Ranges", "bytes");
+    if (Number.isFinite(data.ContentLength))
+      res.set("Content-Length", String(data.ContentLength));
+    if (data.ContentLength === 0) {
+      data.Body?.destroy?.();
+      return res.end();
+    }
+    await pipeline(data.Body, res);
+    return;
+  }
+  const info = remote
+    ? await r2Storage.head(file)
+    : (await bucket().find({ filename: file }).limit(1).toArray())[0];
+  if (!info) {
+    // Tương thích dữ liệu cũ nằm trên ổ đĩa.
+    const disk = path.join(config.uploadDir, file);
+    if (!remote && (await fs.stat(disk).catch(() => null)))
+      return res.sendFile(disk);
+    return res.status(404).json({ message: "Ảnh/video đã hết hạn lưu trữ." });
+  }
+  const size = remote ? info.ContentLength : info.length;
+  res.type(
+    contentType ||
+      info.ContentType ||
+      info.metadata?.contentType ||
+      "application/octet-stream",
+  );
+  res.set("Accept-Ranges", "bytes");
+  const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || "");
+  let start = 0;
+  let end = size - 1;
+  if (range && (range[1] || range[2])) {
+    if (range[1]) {
+      start = Number(range[1]);
+      if (range[2]) end = Math.min(Number(range[2]), size - 1);
+    } else start = Math.max(0, size - Number(range[2]));
+    if (start > end || start >= size) {
+      res.set("Content-Range", `bytes */${size}`);
+      return res.status(416).end();
+    }
+    res.status(206).set("Content-Range", `bytes ${start}-${end}/${size}`);
+  }
+  res.set("Content-Length", String(end - start + 1));
+  if (req.method === "HEAD" || size === 0) return res.end();
+  if (remote) {
+    const data = await r2Storage.get(
+      file,
+      range && (range[1] || range[2]) ? `bytes=${start}-${end}` : undefined,
+    );
+    if (!data) {
+      res.removeHeader("Content-Length");
+      res.removeHeader("Content-Range");
+      return res.status(404).json({ message: "Ảnh/video đã hết hạn lưu trữ." });
+    }
+    // Keep the existing authenticated URLs; bucket keys/credentials are private.
+    await pipeline(data.Body, res);
+    return;
+  }
+  await new Promise((resolve, reject) =>
+    bucket()
+      .openDownloadStream(info._id, { start, end: end + 1 })
+      .once("error", reject)
+      .pipe(res)
+      .once("finish", resolve)
+      .once("close", resolve),
+  );
+}
+
+// Mỗi ảnh lưu MEDIA_TTL_HOURS giờ (mặc định 24) kể từ lúc chụp / tải lên — thời điểm lấy từ
+// mã ảnh (ObjectId), nên ảnh cũ cũng tính đúng. Lệnh in lưu 24 giờ kể từ lúc khách gửi.
+export const photoTime = (p) => p._id.getTimestamp().getTime();
+export const photoExpiry = (p) => new Date(photoTime(p) + MEDIA_TTL_MS);
+// Lúc ảnh sớm nhất còn lại tự xóa (hiện cho khách: "ảnh đầu tiên tự xóa lúc …").
+export function firstExpiry(photos = []) {
+  const shown = photos.filter((p) => !p.deleted);
+  const list = shown.length ? shown : photos;
+  return list.length
+    ? new Date(Math.min(...list.map(photoTime)) + MEDIA_TTL_MS)
+    : undefined;
+}
+
+export async function purgeExpiredMedia(now = new Date()) {
+  const cutoff = new Date(now - MEDIA_TTL_MS);
+  // Mọi ObjectId tạo trước giây (cutoff + 1) — lọc chính xác lại bằng photoTime bên dưới.
+  const before = mongoose.Types.ObjectId.createFromTime(
+    Math.floor(cutoff.getTime() / 1000) + 1,
+  );
+  const candidates = await Booking.find({
+    $or: [
+      { "photos._id": { $lt: before } },
+      // Dữ liệu cũ còn video (máy chụp không quay video nữa).
+      { "video.file": { $exists: true }, mediaExpiresAt: { $lte: now } },
+    ],
+  });
+  let changed = 0;
+  for (const b of candidates) {
+    const old = b.photos.filter((p) => photoTime(p) <= cutoff.getTime());
+    const keep = b.photos.filter((p) => photoTime(p) > cutoff.getTime());
+    const video = b.video?.file && !keep.length ? [b.video.file] : [];
+    if (!old.length && !video.length) continue;
+    changed++;
+    await deleteMedia([
+      ...old.flatMap((p) =>
+        [p.file, p.originalFile, p.thumbnailFile, p.previewFile, p.printFile].filter(Boolean),
+      ),
+      ...video,
+    ]);
+    // Chỉ gỡ đúng các ảnh hết hạn (ảnh vừa chụp thêm trong lúc dọn không bị ảnh hưởng).
+    await Booking.updateOne(
+      { _id: b._id },
+      {
+        $pull: { photos: { _id: { $in: old.map((p) => p._id) } } },
+        ...(keep.length && { $set: { mediaExpiresAt: firstExpiry(keep) } }),
+      },
+    );
+    // Hết sạch ảnh: album báo "Ảnh đã hết hạn lưu trữ".
+    await Booking.updateOne(
+      { _id: b._id, photos: { $size: 0 } },
+      { $set: { mediaDeleted: true }, $unset: { video: 1 } },
+    );
+  }
+  // Mỗi lệnh in lưu 24 giờ kể từ lúc khách gửi (đã in hay chưa), rồi xóa cùng file tờ in.
+  const oldJobs = await PrintJob.find({ createdAt: { $lte: cutoff } });
+  await deleteMedia(
+    oldJobs
+      .flatMap((j) => [j.file, ...(j.sheets || []).map((s) => s.file)])
+      .filter(Boolean),
+  );
+  await PrintJob.deleteMany({ _id: { $in: oldJobs.map((j) => j._id) } });
+  return changed;
+}
+
+export function startMediaCleanup() {
+  validateMediaStorage();
+  const run = () =>
+    purgeExpiredMedia().catch((e) =>
+      console.error("Dọn ảnh/video hết hạn thất bại:", e.message),
+    );
+  run();
+  return setInterval(run, 15 * 60 * 1000).unref();
+}

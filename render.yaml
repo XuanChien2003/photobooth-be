@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: photo-be
+    runtime: node
+    plan: free
+    # Exact versions from package-lock.json, without test-only packages (faster, reproducible).
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGO_URI
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CLIENT_URL
+        sync: false
+      - key: ADMIN_EMAIL
+        value: admin@nxc.local
+      - key: ADMIN_PASSWORD
+        sync: false
