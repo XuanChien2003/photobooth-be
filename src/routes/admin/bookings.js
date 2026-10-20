@@ -116,6 +116,12 @@ bookingsRouter.post("/bookings/:id/prints", async (req, res) => {
             $max: [0, { $subtract: [{ $ifNull: ["$requestedExtraPrints", 0] }, d.sheets] }],
           },
           total: { $add: [{ $ifNull: ["$total", 0] }, amount] },
+          extraSales: {
+            $concatArrays: [
+              { $ifNull: ["$extraSales", []] },
+              [{ sheets: d.sheets, amount, paymentMethod: d.paymentMethod, at: "$$NOW" }],
+            ],
+          },
           extraPrintKeys: {
             $concatArrays: [
               { $ifNull: ["$extraPrintKeys", []] },

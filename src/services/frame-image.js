@@ -39,3 +39,11 @@ export async function backfillImageHashes() {
     );
   return frames.length;
 }
+
+export const stickerImageUrl = (sticker) =>
+  `/api/stickers/${sticker._id}/image?v=${imageVersion(sticker)}`;
+// Sticker dạng nhẹ (không kèm ảnh base64) cho danh sách và /catalog.
+export const stickerListItem = (sticker) => ({
+  ...sticker,
+  image: stickerImageUrl(sticker),
+});

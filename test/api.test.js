@@ -24,6 +24,8 @@ import {
   Frame,
   KioskAttempt,
   Setting,
+  Shift,
+  Sticker,
 } from "../src/models/index.js";
 import { printEvents } from "../src/services/print-events.js";
 import { backfillImageHashes, hashImage } from "../src/services/frame-image.js";
@@ -321,6 +323,76 @@ test("kiosk size choice must match the paid package and extra prints wait for co
   } finally {
     await Booking.deleteOne({ _id: draft.body._id });
     await KioskAttempt.deleteOne({ deviceKey });
+  }
+});
+
+test("a branch has one open shift whose close sums the tickets paid during it", async () => {
+  await Shift.deleteMany({});
+  await admin.post("/api/admin/shifts/open").send({ openingCash: 500000 }).expect(400);
+  await admin.post("/api/admin/shifts/open").send({ branch: "Nowhere" }).expect(404);
+  const opened = await staff.post("/api/admin/shifts/open").send({ branch: "Other branch", openingCash: 500000 }).expect(201);
+  assert.equal(opened.body.branch, "Test branch", "staff always open their own branch");
+  await admin.post("/api/admin/shifts/open").send({ branch: "Test branch" }).expect(409);
+  const before = Date.now();
+  const paid = await Booking.create([
+    { branch: "Test branch", paid: true, paidAt: new Date(before + 1), paymentMethod: "cash", total: 70000, status: "confirmed" },
+    { branch: "Test branch", paid: true, paidAt: new Date(before + 2), paymentMethod: "transfer", total: 100000, status: "confirmed" },
+    { branch: "Other branch", paid: true, paidAt: new Date(before + 3), paymentMethod: "cash", total: 999000, status: "confirmed" },
+    { branch: "Test branch", paid: false, paymentMethod: "cash", total: 50000, status: "pending" },
+  ]);
+  try {
+    const live = await staff.get("/api/admin/shifts").expect(200);
+    assert.deepEqual(live.body.current.summary,
+      { tickets: 2, extraSheets: 0, cash: 70000, transfer: 100000, total: 170000 });
+    // Tờ in bán thêm tính theo lúc bán và hình thức thu của lần bán đó, không theo vé gốc.
+    const price = (await Setting.findOne({ key: "studio" }))?.value?.extraPrintPrice || 0;
+    await staff.post(`/api/admin/bookings/${paid[0]._id}/prints`).send({
+      sheets: 2, paymentMethod: "transfer", paymentReceived: true,
+      expectedTotal: 2 * price, requestKey: randomUUID(),
+    }).expect(200);
+    const withExtra = (await staff.get("/api/admin/shifts").expect(200)).body.current.summary;
+    assert.deepEqual(withExtra,
+      { tickets: 2, extraSheets: 2, cash: 70000, transfer: 100000 + 2 * price, total: 170000 + 2 * price });
+    const foreign = await Shift.create({ branch: "Other branch", openedByName: "X" });
+    await staff.post(`/api/admin/shifts/${foreign._id}/close`).send({ closingCash: 0 }).expect(403);
+    const closed = await staff.post(`/api/admin/shifts/${opened.body._id}/close`)
+      .send({ closingCash: 570000, note: "Đủ tiền" }).expect(200);
+    assert.equal(closed.body.open, false);
+    assert.equal(closed.body.summary.cash, 70000);
+    assert.equal(closed.body.closingCash, 570000);
+    const after = await staff.get("/api/admin/shifts").expect(200);
+    assert.equal(after.body.current, null);
+    assert.ok(after.body.recent.every((s) => s.branch === "Test branch"));
+    await staff.post("/api/admin/shifts/open").send({}).expect(201);
+  } finally {
+    await Booking.deleteMany({ _id: { $in: paid.map((b) => b._id) } });
+    await Shift.deleteMany({});
+  }
+});
+
+test("admins manage image stickers and the kiosk idle screen; the catalog links their images", async () => {
+  const image = "data:image/png;base64,iVBORw0KGgo=";
+  await staff.post("/api/admin/stickers").send({ name: "Sao", image, active: true }).expect(403);
+  await admin.post("/api/admin/stickers").send({ name: "Sao", image: "data:image/jpeg;base64,AAAA", active: true }).expect(400);
+  const sticker = await admin.post("/api/admin/stickers").send({ name: "Sao", image, active: true }).expect(200);
+  try {
+    const listed = (await request(app).get("/api/catalog").expect(200)).body.stickers;
+    const item = listed.find((s) => s._id === sticker.body._id);
+    assert.match(item.image, /^\/api\/stickers\/[a-f0-9]{24}\/image\?v=[a-f0-9]{12}$/);
+    const png = await request(app).get(item.image).expect(200);
+    assert.equal(png.headers["content-type"], "image/png");
+    await staff.put("/api/admin/settings/kiosk").send({ idleTitle: "Hi" }).expect(403);
+    await admin.put("/api/admin/settings/kiosk")
+      .send({ idleTitle: "Chào bạn", idleSubtitle: "Chạm để chụp", idleImage: image }).expect(200);
+    await admin.put("/api/admin/settings/extra-print-price").send({ extraPrintPrice: 15000 }).expect(200);
+    const settings = (await request(app).get("/api/catalog").expect(200)).body.settings;
+    assert.equal(settings.kiosk.idleTitle, "Chào bạn");
+    assert.match(settings.kiosk.idleImage, /^\/api\/studio\/kiosk-idle\?v=/);
+    await request(app).get(settings.kiosk.idleImage).expect(200);
+    await admin.delete(`/api/admin/stickers/${sticker.body._id}`).expect(200);
+    assert.equal((await request(app).get("/api/catalog")).body.stickers.some((s) => s._id === sticker.body._id), false);
+  } finally {
+    await Sticker.deleteMany({});
   }
 });
 
@@ -1930,8 +2002,10 @@ test("admin can create, edit and deactivate every catalog resource; settings are
     bankQrImage: "https://example.com/bank-qr.png",
   };
   await admin.put("/api/admin/settings").send(studio).expect(200);
+  // Lưu thông tin tiệm chỉ ghi các mục đó; giá in thêm và màn hình chờ kiosk được giữ nguyên.
+  const publicSettings = (await request(app).get("/api/catalog")).body.settings;
   assert.deepEqual(
-    (await request(app).get("/api/catalog")).body.settings,
+    Object.fromEntries(Object.keys(studio).map((key) => [key, publicSettings[key]])),
     studio,
   );
   await request(app).get("/api/studio/qr").expect(404);

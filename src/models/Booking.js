@@ -75,6 +75,8 @@ const bookingSchema = new Schema(
     extraPrints: { type: Number, default: 0 },
     // Số tờ khách chọn thêm trên kiosk, chờ lễ tân thu tiền (bán thêm tờ in sẽ trừ dần).
     requestedExtraPrints: { type: Number, default: 0 },
+    // Mỗi lần bán thêm tờ in: tiền và hình thức thu tại thời điểm bán (đối soát theo ca trực).
+    extraSales: [{ _id: false, sheets: Number, amount: Number, paymentMethod: String, at: Date }],
     extraPrintKeys: { type: [String], select: false },
     mediaExpiresAt: Date,
     mediaDeleted: { type: Boolean, default: false },
@@ -87,6 +89,9 @@ bookingSchema.index({ createdAt: -1 });
 bookingSchema.index({ date: 1, createdAt: -1 });
 bookingSchema.index({ status: 1, createdAt: -1 });
 bookingSchema.index({ mediaExpiresAt: 1 });
+// Tổng tiền đã thu trong ca trực của một chi nhánh (khung Ca trực làm mới 30 giây/lần).
+bookingSchema.index({ branch: 1, paidAt: 1 });
+bookingSchema.index({ branch: 1, "extraSales.at": 1 });
 // Dọn ảnh hết hạn 15 phút/lần tìm vé có ảnh cũ (ObjectId ảnh mang thời điểm chụp).
 bookingSchema.index({ "photos._id": 1 });
 

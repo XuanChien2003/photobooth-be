@@ -1,11 +1,11 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { User, Room, Package, Frame } from "../../models/index.js";
+import { User, Room, Package, Frame, Sticker } from "../../models/index.js";
 import { admin, isAdmin, staffBranch } from "../../middleware/auth.js";
 import { fail, id, text, priceVND } from "../validation.js";
 import { moveFrame, withFrameCatalogLock } from "../../services/frame-order.js";
-import { frameListItem, hashImage } from "../../services/frame-image.js";
+import { frameListItem, hashImage, stickerListItem } from "../../services/frame-image.js";
 
 export const resourcesRouter = Router();
 
@@ -87,6 +87,21 @@ const resources = {
       active,
     }),
   ],
+  stickers: [
+    Sticker,
+    z.object({
+      name: text,
+      order: z.number().int().min(0).max(999).default(0),
+      image: z
+        .string({ error: "Vui lòng chọn ảnh sticker." })
+        .max(700_000, "Ảnh sticker quá lớn (tối đa khoảng 500 KB).")
+        .regex(
+          /^data:image\/(png|webp);base64,[A-Za-z0-9+/]+={0,2}$/,
+          "Sticker cần là ảnh PNG hoặc WebP (nên có nền trong suốt).",
+        ),
+      active,
+    }),
+  ],
   users: [
     User,
     z.object({
@@ -113,7 +128,9 @@ for (const [route, [Model, schema]] of Object.entries(resources)) {
       res.json(
         route === "frames"
           ? (await query.select("-image").lean()).map(frameListItem)
-          : await query,
+          : route === "stickers"
+            ? (await query.select("-image").lean()).map(stickerListItem)
+            : await query,
       );
     },
   );
@@ -148,7 +165,7 @@ for (const [route, [Model, schema]] of Object.entries(resources)) {
           `Đã có ${route === "rooms" ? "phòng" : "gói chụp"} tên “${clash.name}”. Vui lòng đặt tên khác.`,
         );
     }
-    if (route === "frames") d.imageHash = hashImage(d.image);
+    if (route === "frames" || route === "stickers") d.imageHash = hashImage(d.image);
     const changes = { $set: d };
     if (route === "users" && d.password) changes.$inc = { sessionVersion: 1 };
     const write = () =>
@@ -169,6 +186,12 @@ for (const [route, [Model, schema]] of Object.entries(resources)) {
   resourcesRouter.delete(`/${route}/:id`, admin, async (req, res) => {
     if (route === "users" && String(req.user._id) === req.params.id)
       fail(403, "Không thể tự ngừng hoạt động tài khoản đang đăng nhập.");
+    if (route === "stickers") {
+      // Sticker đã dán được in thẳng vào ảnh nên xóa hẳn không ảnh hưởng vé cũ.
+      if (!(await Sticker.findByIdAndDelete(id.parse(req.params.id))))
+        fail(404, "Không tìm thấy dữ liệu.");
+      return res.json({ ok: true });
+    }
     if (route === "frames") {
       // Khung không gắn với vé nào nên xóa hẳn.
       const removed = await withFrameCatalogLock(() =>

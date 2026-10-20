@@ -13,6 +13,7 @@ import { statsRouter } from "./stats.js";
 import { settingsRouter } from "./settings.js";
 import { resourcesRouter } from "./resources.js";
 import { storageRouter } from "./storage.js";
+import { shiftsRouter } from "./shifts.js";
 
 export const adminRouter = Router();
 
@@ -23,6 +24,7 @@ adminRouter.use("/print-jobs", printsRouter);
 adminRouter.use(bookingsRouter);
 adminRouter.use("/stats", statsRouter);
 adminRouter.use("/storage", storageRouter);
+adminRouter.use("/shifts", shiftsRouter);
 
 adminRouter.post("/rooms/:id/device", async (req, res) => {
   const room = await Room.findById(id.parse(req.params.id));

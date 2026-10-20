@@ -83,10 +83,33 @@ kioskRouter.post("/claim", sensitive(), async (req, res) => {
       { codeExpiresAt: { $exists: false }, createdAt: { $gt: new Date(Date.now() - 2 * 60 * 60 * 1000) } },
     ],
   };
-  if (d.printSize) {
+  const sessionId = token();
+  // Một lệnh duy nhất: nhận mã đúng khổ đã mua và ghi số tờ khách chọn thêm (vé cũ không có khổ = khổ to).
+  const b = await Booking.findOneAndUpdate(
+    {
+      ...validCode,
+      ...(d.printSize && {
+        printSize: d.printSize === "full" ? { $in: ["full", null] } : d.printSize,
+      }),
+    },
+    [{ $set: {
+      status: "checked_in",
+      room: room._id,
+      roomName: { $literal: room.name },
+      captureSession: { $literal: sessionId },
+      captureSeenAt: "$$NOW",
+      ...(d.prints && {
+        requestedExtraPrints: {
+          $max: [0, { $subtract: [d.prints, { $ifNull: ["$prints", 0] }] }],
+        },
+      }),
+    } }],
+    { new: true },
+  ).select("+accessToken");
+  if (!b && d.printSize) {
     // Mã đúng nhưng khác khổ đã mua: không tính là nhập sai và chưa dùng mã.
     const paid = await Booking.findOne(validCode).select("printSize packageName").lean();
-    if (paid && (paid.printSize || "full") !== d.printSize) {
+    if (paid) {
       res.status(409).json({
         message: `Mã này thuộc gói ${paid.packageName || ""} (${
           paid.printSize === "strip" ? "khung bé" : "khung to"}). Vui lòng chọn lại khổ ảnh.`,
@@ -95,20 +118,6 @@ kioskRouter.post("/claim", sensitive(), async (req, res) => {
       return;
     }
   }
-  const sessionId = token();
-  const b = await Booking.findOneAndUpdate(
-    {
-      ...validCode,
-    },
-    {
-      status: "checked_in",
-      room: room._id,
-      roomName: room.name,
-      captureSession: sessionId,
-      captureSeenAt: new Date(),
-    },
-    { new: true },
-  ).select("+accessToken");
   if (!b) {
     const other = await Booking.findOne({ code: d.code, paid: true });
     if (other && ["checked_in", "completed"].includes(other.status))
@@ -124,11 +133,6 @@ kioskRouter.post("/claim", sensitive(), async (req, res) => {
     );
   }
   await KioskAttempt.deleteOne({ deviceKey });
-  const extra = Math.max(0, (d.prints || 0) - (Number(b.prints) || 0));
-  if (extra) {
-    b.requestedExtraPrints = extra;
-    await Booking.updateOne({ _id: b._id }, { requestedExtraPrints: extra });
-  }
   res.json({
     booking: publicBooking(b),
     accessToken: b.accessToken,

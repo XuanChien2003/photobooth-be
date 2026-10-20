@@ -24,6 +24,30 @@ settingsRouter.put("/extra-print-price", admin, async (req, res) => {
   res.json(saved.value);
 });
 
+// Màn hình chờ của máy chụp (Tap to start): tiêu đề, dòng phụ và ảnh nền tùy chọn.
+settingsRouter.put("/kiosk", admin, async (req, res) => {
+  const kiosk = z
+    .object({
+      idleTitle: z.string().trim().max(60).default(""),
+      idleSubtitle: z.string().trim().max(120).default(""),
+      idleImage: z
+        .string()
+        .max(4_200_000, "Ảnh nền quá lớn. Vui lòng chọn ảnh dưới 3 MB.")
+        .refine(
+          (v) => v === "" || /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(v),
+          "Ảnh nền phải là ảnh PNG, JPG hoặc WebP.",
+        )
+        .default(""),
+    })
+    .parse(req.body);
+  const saved = await Setting.findOneAndUpdate(
+    { key: "studio" },
+    { $set: { "value.kiosk": kiosk } },
+    { upsert: true, new: true },
+  );
+  res.json(saved.value);
+});
+
 settingsRouter.put("/", admin, async (req, res) => {
   const value = z
     .object({
@@ -62,10 +86,11 @@ settingsRouter.put("/", admin, async (req, res) => {
       "Vui lòng nhập đủ tên ngân hàng, số tài khoản và chủ tài khoản.",
     )
     .parse(req.body);
-  await Setting.findOneAndUpdate(
+  // Ghi từng mục: không xóa mất cài đặt lưu ở chỗ khác (giá in thêm, màn hình chờ kiosk).
+  const saved = await Setting.findOneAndUpdate(
     { key: "studio" },
-    { value },
-    { upsert: true },
+    { $set: Object.fromEntries(Object.entries(value).map(([key, v]) => [`value.${key}`, v])) },
+    { upsert: true, new: true },
   );
-  res.json(value);
+  res.json(saved.value);
 });

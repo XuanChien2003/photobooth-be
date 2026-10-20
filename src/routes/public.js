@@ -3,10 +3,10 @@ import mongoose from "mongoose";
 import swaggerUi from "swagger-ui-express";
 import { config } from "../config.js";
 import { openapi } from "../openapi.js";
-import { Room, Package, Frame, Setting } from "../models/index.js";
+import { Room, Package, Frame, Setting, Sticker } from "../models/index.js";
 import { captureStatus } from "../services/capture.js";
 import { id } from "./validation.js";
-import { frameListItem, hashImage } from "../services/frame-image.js";
+import { frameListItem, hashImage, stickerListItem } from "../services/frame-image.js";
 import { catalogCache } from "../services/read-cache.js";
 
 export const publicRouter = Router();
@@ -75,6 +75,16 @@ publicRouter.get("/frames/:id/image", async (req, res) => {
   if (!sendDataImage(req, res, frame?.image))
     res.status(404).json({ message: "Không tìm thấy ảnh khung." });
 });
+publicRouter.get("/stickers/:id/image", async (req, res) => {
+  const sticker = await Sticker.findById(id.parse(req.params.id)).select("image").lean();
+  if (!sendDataImage(req, res, sticker?.image))
+    res.status(404).json({ message: "Không tìm thấy ảnh sticker." });
+});
+publicRouter.get("/studio/kiosk-idle", async (req, res) => {
+  const setting = await Setting.findOne({ key: "studio" }).lean();
+  if (!sendDataImage(req, res, setting?.value?.kiosk?.idleImage))
+    res.status(404).json({ message: "Chưa có ảnh màn hình chờ." });
+});
 publicRouter.get("/studio/qr", async (req, res) => {
   const setting = await Setting.findOne({ key: "studio" }).lean();
   if (!sendDataImage(req, res, setting?.value?.bankQrImage))
@@ -85,21 +95,26 @@ publicRouter.get("/catalog", async (req, res) => {
   res.json(await catalogCache.get("catalog", buildCatalog));
 });
 async function buildCatalog() {
-  const [rooms, packages, frames, setting] = await Promise.all([
+  const [rooms, packages, frames, setting, stickers] = await Promise.all([
     Room.find({ active: true }).lean(),
     Package.find({ active: true }).sort({ price: 1 }).lean(),
     Frame.find({ active: true, "slots.0": { $exists: true } })
       .select("-image")
       .lean(),
     Setting.findOne({ key: "studio" }).lean(),
+    Sticker.find({ active: true }).select("-image").sort({ order: 1, createdAt: 1 }).lean(),
   ]);
   const settings = { ...setting?.value };
   if (settings.bankQrImage?.startsWith("data:"))
     settings.bankQrImage = `/api/studio/qr?v=${hashImage(settings.bankQrImage)}`;
+  if (settings.kiosk?.idleImage?.startsWith("data:"))
+    settings.kiosk = { ...settings.kiosk,
+      idleImage: `/api/studio/kiosk-idle?v=${hashImage(settings.kiosk.idleImage)}` };
   return {
     rooms,
     packages,
     frames: frames.map(frameListItem),
+    stickers: stickers.map(stickerListItem),
     settings,
     devices: captureStatus(),
   };

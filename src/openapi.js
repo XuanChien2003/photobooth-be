@@ -108,6 +108,7 @@ const resources = {
   rooms: ["phòng chụp", "Room"],
   packages: ["gói chụp", "Package"],
   frames: ["khung ảnh", "Frame"],
+  stickers: ["sticker", "Sticker"],
   users: ["tài khoản nhân viên", "UserInput"],
 };
 const resourcePaths = Object.fromEntries(
@@ -165,7 +166,8 @@ const resourcePaths = Object.fromEntries(
         delete: {
           tags: ["Danh mục & cài đặt"],
           summary:
-            route === "frames" ? "Xóa khung ảnh" : `Tắt ${label} (không xóa)`,
+            route === "frames" ? "Xóa khung ảnh"
+              : route === "stickers" ? "Xóa sticker" : `Tắt ${label} (không xóa)`,
           description: adminOnly,
           security: loggedIn,
           responses: {
@@ -390,6 +392,15 @@ export const openapi = {
         },
         ["name", "image", "slots", "active"],
       ),
+      Sticker: object(
+        {
+          name: { type: "string", example: "Ngôi sao" },
+          order: { type: "integer", example: 0 },
+          image: str("Ảnh PNG/WebP nền trong suốt dạng data URL (≤ 500 KB)"),
+          active: { type: "boolean", example: true },
+        },
+        ["name", "image", "active"],
+      ),
       UserInput: object(
         {
           name: { type: "string", example: "Lễ tân Mai" },
@@ -594,6 +605,29 @@ export const openapi = {
               "image/png": { schema: { type: "string", format: "binary" } },
             },
           },
+          ...errors(404),
+        },
+      },
+    },
+    "/api/stickers/{id}/image": {
+      get: {
+        tags: ["Hệ thống"],
+        summary: "Ảnh sticker (công khai)",
+        description: "Có ?v=… (lấy từ /api/catalog) thì cache 1 năm.",
+        parameters: [pathParam("id", "Mã sticker"), query("v", "Phiên bản ảnh", { type: "string" })],
+        responses: {
+          200: { description: "Ảnh sticker", content: { "image/png": { schema: { type: "string", format: "binary" } } } },
+          ...errors(404),
+        },
+      },
+    },
+    "/api/studio/kiosk-idle": {
+      get: {
+        tags: ["Hệ thống"],
+        summary: "Ảnh nền màn hình chờ của máy chụp (công khai)",
+        parameters: [query("v", "Phiên bản ảnh", { type: "string" })],
+        responses: {
+          200: { description: "Ảnh nền", content: { "image/jpeg": { schema: { type: "string", format: "binary" } } } },
           ...errors(404),
         },
       },
@@ -1398,6 +1432,57 @@ export const openapi = {
           ),
           ...errors(400, 401, 404, 409),
         },
+      },
+    },
+    "/api/admin/settings/kiosk": {
+      put: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Lưu màn hình chờ của máy chụp (Tap to start)",
+        description: adminOnly,
+        security: loggedIn,
+        requestBody: body({
+          idleTitle: str("Dòng chữ lớn, để trống = “Tap to start”"),
+          idleSubtitle: str("Dòng chữ nhỏ bên dưới"),
+          idleImage: str("Ảnh nền PNG/JPG/WebP dạng data URL, \"\" để bỏ ảnh"),
+        }, []),
+        responses: { ...ok("Đã lưu", ref("Settings")), ...errors(400, 401, 403) },
+      },
+    },
+    "/api/admin/shifts": {
+      get: {
+        tags: ["Quầy & vé"],
+        summary: "Ca trực đang mở và 20 ca gần nhất",
+        description: "Lễ tân xem chi nhánh được phân công; quản trị chọn ?branch=.",
+        security: loggedIn,
+        parameters: [query("branch", "Chi nhánh (chỉ quản trị)", { type: "string" })],
+        responses: { ...ok("Ca trực"), ...errors(401, 403) },
+      },
+    },
+    "/api/admin/shifts/open": {
+      post: {
+        tags: ["Quầy & vé"],
+        summary: "Mở ca",
+        description: "Mỗi chi nhánh chỉ một ca đang mở (409 nếu đã có).",
+        security: loggedIn,
+        requestBody: body({
+          branch: str("Chi nhánh (quản trị bắt buộc chọn; lễ tân bỏ qua)"),
+          openingCash: int("Tiền mặt đầu ca (VND)"),
+        }, []),
+        responses: { ...ok("Đã mở ca", { type: "object" }, 201), ...errors(400, 401, 403, 404, 409) },
+      },
+    },
+    "/api/admin/shifts/{id}/close": {
+      post: {
+        tags: ["Quầy & vé"],
+        summary: "Đóng ca",
+        description: "Chốt số vé, tiền mặt và chuyển khoản đã thu trong ca.",
+        security: loggedIn,
+        parameters: [pathParam("id", "Mã ca trực")],
+        requestBody: body({
+          closingCash: int("Tiền mặt đếm được cuối ca (VND)"),
+          note: str("Ghi chú"),
+        }, ["closingCash"]),
+        responses: { ...ok("Đã đóng ca"), ...errors(400, 401, 403, 404) },
       },
     },
     "/api/admin/settings": {
