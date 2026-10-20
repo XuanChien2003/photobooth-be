@@ -8,6 +8,7 @@ import { albumsRouter } from "./routes/albums.js";
 import { kioskRouter } from "./routes/kiosk.js";
 import { authRouter } from "./routes/auth.js";
 import { adminRouter } from "./routes/admin/index.js";
+import { printAgentRouter } from "./routes/print-agent.js";
 
 export const app = express();
 configureSecurity(app);
@@ -17,6 +18,7 @@ app.use("/api/albums", albumsRouter);
 app.use("/api/kiosk", kioskRouter);
 app.use("/api/auth", authRouter);
 app.use("/api/admin", adminRouter);
+app.use("/api/print-agent", printAgentRouter);
 
 app.use("/api", (req, res) =>
   res.status(404).json({ message: "API không tồn tại." }),

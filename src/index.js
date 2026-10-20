@@ -9,6 +9,7 @@ import Frame from "./models/Frame.js";
 import { removeActivityLogs } from "./services/activity-log-cleanup.js";
 import { validateMediaStorage } from "./services/r2.js";
 import { backfillImageHashes } from "./services/frame-image.js";
+import { ensureDefaultPackages } from "./services/default-packages.js";
 if (!config.mongo || !config.secret || config.secret.length < 32)
   throw new Error("Thiếu MONGO_URI hoặc JWT_SECRET (ít nhất 32 ký tự).");
 validateMediaStorage();
@@ -31,6 +32,7 @@ try {
   });
   if (deletedCount) console.log(`Đã xóa ${deletedCount} khung ảnh cũ.`);
   await Promise.all(Object.values(mongoose.models).map((m) => m.init()));
+  await ensureDefaultPackages();
   await backfillImageHashes();
   const server = app.listen(config.port, () =>
     console.log(`API ready: http://localhost:${config.port}`),

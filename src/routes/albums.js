@@ -262,6 +262,8 @@ albumsRouter.post("/:token/print-pack", printLimit, printBody, async (req, res) 
       code: b.code,
       name: b.name,
       roomName: b.roomName,
+      branch: b.branch,
+      printSize: b.printSize || "full",
       copies: 1,
       frameName: d.frameName,
       file: files[0],
@@ -270,10 +272,10 @@ albumsRouter.post("/:token/print-pack", printLimit, printBody, async (req, res) 
       height: sheets[0].height,
       requestKey: d.requestKey,
       requestFingerprint: fingerprint,
-      spoolStatus: config.dnpPrinter ? "queued" : "idle",
+      spoolStatus: config.dnpPrinter || config.printAgentToken ? "queued" : "idle",
     });
     dispatchPrint(job);
-    printEvents.emit("print", publicJob(job, req.params.token));
+    printEvents.emit("print", { ...publicJob(job, req.params.token), branch: b.branch });
     res.status(201).json({ ...publicJob(job), ...quota(reserved) });
   } catch (e) {
     await Promise.allSettled(saves); // remove only after every upload has finished

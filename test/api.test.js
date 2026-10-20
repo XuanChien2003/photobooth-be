@@ -22,6 +22,8 @@ import {
   Booking,
   PrintJob,
   Frame,
+  KioskAttempt,
+  Setting,
 } from "../src/models/index.js";
 import { printEvents } from "../src/services/print-events.js";
 import { backfillImageHashes, hashImage } from "../src/services/frame-image.js";
@@ -56,14 +58,14 @@ before(async () => {
     name: "Test package",
     price: 120000,
     duration: 20,
-    shots: 2,
+    shots: 12,
     prints: 2,
     active: true,
   });
   const password = await bcrypt.hash("TestPassword!123", 10);
   await User.create([
     { name: "Admin", email: "admin@test.local", password, role: "admin" },
-    { name: "Staff", email: "staff@test.local", password, role: "staff" },
+    { name: "Staff", email: "staff@test.local", password, role: "staff", branch: "Test branch" },
   ]);
   admin = request.agent(app);
   staff = request.agent(app);
@@ -135,7 +137,7 @@ test("staff can open a room kiosk, but guests and inactive rooms cannot receive 
   const kioskRoom = await Room.create({
     name: "Staff kiosk room",
     description: "Opened from the receptionist room list",
-    branch: "Staff kiosk branch",
+    branch: "Test branch",
     active: true,
   });
   let ticket;
@@ -231,6 +233,162 @@ test("only staff issue paid walk-in codes; multiple customers need no time slot"
     .expect(400);
 });
 
+test("unpaid drafts have no usable code; activation is idempotent and starts the two-hour expiry", async () => {
+  const requestKey = randomUUID();
+  const sale = { name: "Draft A", room: String(room._id), package: String(pack._id),
+    requestKey, expectedTotal: pack.price };
+  const first = await staff.post("/api/admin/tickets/draft").send(sale).expect(201);
+  const second = await staff.post("/api/admin/tickets/draft")
+    .send({ ...sale, name: "Draft B", requestKey: randomUUID() }).expect(201);
+  try {
+    assert.equal(first.body.code, undefined);
+    assert.equal(first.body.accessToken, undefined);
+    assert.equal(first.body.paid, false);
+    assert.equal(second.body.code, undefined, "more than one unpaid draft can exist");
+    assert.equal((await staff.post("/api/admin/tickets/draft").send(sale).expect(200)).body._id, first.body._id);
+    await staff.post("/api/admin/tickets/draft").send({ ...sale, name: "Changed" }).expect(409);
+    const device = jwt.sign({ type: "kiosk", room: String(room._id) }, config.secret);
+    await request(app).post("/api/kiosk/claim")
+      .send({ code: "000000", device }).expect(400);
+    const activated = await staff.patch(`/api/admin/tickets/${first.body._id}/activate`)
+      .send({ paymentReceived: true, paymentMethod: "cash", expectedTotal: pack.price }).expect(200);
+    assert.match(activated.body.code, /^\d{6}$/);
+    assert.equal(activated.body.status, "confirmed");
+    assert.equal(activated.body.paid, true);
+    assert.equal(new Date(activated.body.codeExpiresAt) - new Date(activated.body.paidAt), 2 * 60 * 60 * 1000);
+    const replay = await staff.patch(`/api/admin/tickets/${first.body._id}/activate`)
+      .send({ paymentReceived: true, paymentMethod: "cash", expectedTotal: pack.price }).expect(200);
+    assert.equal(replay.body.code, activated.body.code);
+    assert.equal(replay.body.codeExpiresAt, activated.body.codeExpiresAt);
+    await Booking.updateOne({ _id: first.body._id }, { codeExpiresAt: new Date() });
+    await request(app).post("/api/kiosk/claim")
+      .send({ code: activated.body.code, device }).expect(400);
+    await Booking.updateOne({ _id: first.body._id }, { codeExpiresAt: new Date(Date.now() + 60000) });
+    const claims = await Promise.all(Array.from({ length: 2 }, () =>
+      request(app).post("/api/kiosk/claim").send({ code: activated.body.code, device })));
+    assert.deepEqual(claims.map((result) => result.status).sort(), [200, 409]);
+  } finally {
+    await Booking.deleteMany({ _id: { $in: [first.body._id, second.body._id] } });
+  }
+});
+
+test("five simultaneous invalid kiosk codes cause one five-minute device lock", async () => {
+  const device = jwt.sign({ type: "kiosk", room: String(room._id), jti: randomUUID() }, config.secret);
+  const deviceKey = (await import("node:crypto")).createHash("sha256").update(device).digest("hex");
+  try {
+    const failures = await Promise.all(Array.from({ length: 5 }, () =>
+      request(app).post("/api/kiosk/claim").send({ code: "000000", device })));
+    assert.equal(failures.filter((result) => result.status === 429).length, 1);
+    const lock = await KioskAttempt.findOne({ deviceKey });
+    assert.ok(lock.lockedUntil > new Date());
+    const blocked = await request(app).post("/api/kiosk/claim")
+      .send({ code: "000000", device }).expect(429);
+    assert.ok(Number(blocked.headers["retry-after"]) > 0);
+    await KioskAttempt.updateOne({ deviceKey }, { lockedUntil: new Date(Date.now() - 1000) });
+    await request(app).post("/api/kiosk/claim")
+      .send({ code: "000000", device }).expect(400);
+    assert.equal((await KioskAttempt.findOne({ deviceKey })).failures, 1);
+  } finally {
+    await KioskAttempt.deleteOne({ deviceKey });
+  }
+});
+
+test("kiosk size choice must match the paid package and extra prints wait for counter payment", async () => {
+  const sale = { name: "Mellow", room: String(room._id), package: String(pack._id),
+    requestKey: randomUUID(), expectedTotal: pack.price };
+  const draft = await staff.post("/api/admin/tickets/draft").send(sale).expect(201);
+  const device = jwt.sign({ type: "kiosk", room: String(room._id), jti: randomUUID() }, config.secret);
+  const deviceKey = (await import("node:crypto")).createHash("sha256").update(device).digest("hex");
+  try {
+    const { body: ticket } = await staff.patch(`/api/admin/tickets/${draft.body._id}/activate`)
+      .send({ paymentReceived: true, paymentMethod: "cash", expectedTotal: pack.price }).expect(200);
+    const wrong = await request(app).post("/api/kiosk/claim")
+      .send({ code: ticket.code, device, printSize: "strip", prints: 2 }).expect(409);
+    assert.equal(wrong.body.printSize, "full");
+    assert.equal(await KioskAttempt.countDocuments({ deviceKey }), 0, "a size mismatch is not a wrong code");
+    assert.equal((await Booking.findById(ticket._id)).status, "confirmed", "the code stays unused");
+    const claimed = await request(app).post("/api/kiosk/claim")
+      .send({ code: ticket.code, device, printSize: "full", prints: pack.prints + 2 }).expect(200);
+    assert.equal(claimed.body.booking.requestedExtraPrints, 2);
+    assert.equal(claimed.body.booking.prints, pack.prints, "unpaid extras are not printable");
+    const sold = await staff.post(`/api/admin/bookings/${ticket._id}/prints`).send({
+      sheets: 2, paymentMethod: "cash", paymentReceived: true,
+      expectedTotal: 2 * ((await Setting.findOne({ key: "studio" }))?.value?.extraPrintPrice || 0),
+      requestKey: randomUUID(),
+    }).expect(200);
+    assert.equal(sold.body.requestedExtraPrints, 0);
+    assert.equal(sold.body.prints, pack.prints + 2);
+  } finally {
+    await Booking.deleteOne({ _id: draft.body._id });
+    await KioskAttempt.deleteOne({ deviceKey });
+  }
+});
+
+test("staff cannot read or act on another branch, including direct ticket and kiosk requests", async () => {
+  const foreignRoom = await Room.create({ name: "Foreign studio", branch: "Other branch", active: true });
+  const foreign = await Booking.create({
+    name: "Other customer", branch: "Other branch", room: foreignRoom._id,
+    package: pack._id, packageName: pack.name, total: pack.price,
+    source: "counter", status: "pending", paid: false,
+  });
+  try {
+    const tickets = (await staff.get("/api/admin/bookings").expect(200)).body;
+    assert.equal(tickets.some((entry) => entry._id === String(foreign._id)), false);
+    await staff.patch(`/api/admin/bookings/${foreign._id}`)
+      .send({ status: "cancelled" }).expect(403);
+    await staff.patch(`/api/admin/tickets/${foreign._id}/activate`)
+      .send({ paymentReceived: true, paymentMethod: "cash", expectedTotal: pack.price }).expect(403);
+    await staff.post("/api/admin/tickets/draft").send({
+      room: String(foreignRoom._id), package: String(pack._id),
+      requestKey: randomUUID(), expectedTotal: pack.price,
+    }).expect(403);
+    await staff.post(`/api/admin/rooms/${foreignRoom._id}/device`).expect(403);
+    const visibleRooms = (await staff.get("/api/admin/rooms").expect(200)).body;
+    assert.equal(visibleRooms.some((entry) => entry._id === String(foreignRoom._id)), false);
+  } finally {
+    await Booking.deleteOne({ _id: foreign._id });
+    await Room.deleteOne({ _id: foreignRoom._id });
+  }
+});
+
+test("a Windows print agent leases one branch job once and reports spool dispatch", async () => {
+  const previous = config.printAgentToken;
+  config.printAgentToken = randomUUID() + randomUUID();
+  const file = `agent-${randomUUID()}.jpg`;
+  await saveMedia(file, await sharp({ create: { width: 12, height: 12,
+    channels: 3, background: "#ddaacc" } }).jpeg().toBuffer(), "image/jpeg");
+  const job = await PrintJob.create({ branch: "Test branch", code: "919191",
+    file, sheets: [{ file }], printSize: "full", copies: 1,
+    status: "pending", spoolStatus: "queued" });
+  const path = "/api/print-agent";
+  const authHeader = { Authorization: `Bearer ${config.printAgentToken}` };
+  try {
+    await request(app).post(`${path}/claim`).send({ branch: "Test branch" }).expect(403);
+    const wrong = await request(app).post(`${path}/claim`)
+      .set(authHeader).send({ branch: "Other branch" }).expect(200);
+    assert.equal(wrong.body.job, null);
+    const claims = await Promise.all(Array.from({ length: 2 }, () =>
+      request(app).post(`${path}/claim`).set(authHeader).send({ branch: "Test branch" })));
+    assert.deepEqual(claims.map((response) => response.status), [200, 200]);
+    const leased = claims.map((response) => response.body.job).filter(Boolean);
+    assert.equal(leased.length, 1);
+    const { leaseId } = leased[0];
+    const sheet = await request(app).get(`${path}/jobs/${job._id}/sheets/0`)
+      .set(authHeader).set("X-Print-Lease", leaseId).expect(200);
+    assert.equal(sheet.headers["content-type"], "image/jpeg");
+    await request(app).post(`${path}/jobs/${job._id}/complete`).set(authHeader)
+      .send({ leaseId: randomUUID(), sent: true }).expect(409);
+    await request(app).post(`${path}/jobs/${job._id}/complete`).set(authHeader)
+      .send({ leaseId, sent: true }).expect(200);
+    const stored = await PrintJob.findById(job._id);
+    assert.equal(stored.spoolStatus, "sent");
+    assert.equal(stored.status, "pending", "spool receipt does not claim physical printing");
+  } finally {
+    config.printAgentToken = previous;
+    await PrintJob.deleteOne({ _id: job._id });
+  }
+});
+
 test("payment transitions are enforced and cancelled tickets cannot be revived", async () => {
   const { body: b } = await staff
     .post("/api/admin/tickets")
@@ -239,14 +397,18 @@ test("payment transitions are enforced and cancelled tickets cannot be revived",
   await staff
     .patch(`/api/admin/bookings/${b._id}`)
     .send({ status: "completed" })
-    .expect(409);
+    .expect(400);
   await Booking.updateOne({ _id: b._id }, { status: "pending", paid: false });
   const paid = await staff
     .patch(`/api/admin/bookings/${b._id}`)
-    .send({ status: "confirmed" })
+    .send({ status: "confirmed", paymentReceived: true })
     .expect(200);
   assert.equal(paid.body.paid, true);
   await staff
+    .patch(`/api/admin/bookings/${b._id}`)
+    .send({ status: "cancelled" })
+    .expect(403);
+  await admin
     .patch(`/api/admin/bookings/${b._id}`)
     .send({ status: "cancelled" })
     .expect(200);
@@ -324,6 +486,26 @@ test("legacy tickets without a duration snapshot can still start", async () => {
     .expect(200);
   assert.equal(started.body.booking.captureDuration, 20);
   await Booking.deleteOne({ _id: b._id });
+});
+
+test("a purchased shot limit is enforced on the server, including upload retries", async () => {
+  const { b, session } = await startSession();
+  try {
+    await request(app).post("/api/kiosk/start")
+      .send({ captureToken: session.captureToken }).expect(200);
+    await Booking.updateOne({ _id: b._id }, { shots: 1 });
+    const image = await jpeg(40, 30);
+    await request(app).post("/api/kiosk/photo")
+      .send({ captureToken: session.captureToken, image, clientKey: "quota-first" }).expect(200);
+    await request(app).post("/api/kiosk/photo")
+      .send({ captureToken: session.captureToken, image, clientKey: "quota-first" }).expect(200);
+    const excess = await request(app).post("/api/kiosk/photo")
+      .send({ captureToken: session.captureToken, image, clientKey: "quota-second" }).expect(409);
+    assert.match(excess.body.message, /Đã chụp đủ 1 ảnh/);
+    assert.equal((await Booking.findById(b._id)).photos.length, 1);
+  } finally {
+    await Booking.deleteOne({ _id: b._id });
+  }
 });
 
 test("frame moves normalize legacy order, keep themes separate and reject stale/concurrent lists", async () => {
@@ -442,7 +624,7 @@ async function startSession() {
   return { b, d, session };
 }
 
-test("self-booth: timed session, unlimited numbered photos, idempotent uploads, timeout and finish", async () => {
+test("self-booth: timed session, numbered photos, idempotent uploads, timeout and finish", async () => {
   const { b, d, session } = await startSession();
   await request(app)
     .post("/api/kiosk/claim")
@@ -819,7 +1001,8 @@ test("web app: favorites, bulk delete, upload, zip and multi-sheet print reach t
     .get(`/api/albums/${token}/print`)
     .expect(200);
   assert.equal(status.body.status, "printed");
-  await staff.delete(`/api/admin/print-jobs/${mine._id}`).expect(200);
+  await staff.delete(`/api/admin/print-jobs/${mine._id}`).expect(403);
+  await admin.delete(`/api/admin/print-jobs/${mine._id}`).expect(200);
   await Booking.deleteOne({ _id: b._id });
 });
 
@@ -839,6 +1022,7 @@ test("each print job lives 24 hours from when it was sent, then is purged with i
     const createdAt = new Date(Date.now() - age);
     await PrintJob.collection.insertOne({
       code,
+      branch: "Test branch",
       name: "Khách",
       status,
       file,
@@ -957,12 +1141,12 @@ test("each photo is kept 24 hours from when it was taken; older photos go first"
   await Booking.deleteOne({ _id: b._id });
 });
 
-test("a paid ticket works at any room and any time on the day it was issued", async () => {
+test("a paid ticket works once at a room in its branch within two hours", async () => {
   const { body: b } = await staff
     .post("/api/admin/tickets")
     .send(bookingData("08:00"))
     .expect(201);
-  const otherRoom = await Room.create({ name: "Phòng 02", active: true });
+  const otherRoom = await Room.create({ name: "Phòng 02", branch: "Test branch", active: true });
   const device = jwt.sign(
     { type: "kiosk", room: String(otherRoom._id) },
     config.secret,
@@ -972,6 +1156,10 @@ test("a paid ticket works at any room and any time on the day it was issued", as
     .send({ code: b.code, device })
     .expect(200);
   assert.equal(body.booking.roomName, "Phòng 02");
+  await request(app)
+    .post("/api/kiosk/claim")
+    .send({ code: b.code, device })
+    .expect(409);
   await request(app)
     .post("/api/kiosk/claim")
     .send({ code: "000000", device })
@@ -1179,7 +1367,7 @@ test("prints follow the package quota; staff sell extra sheets and cancelled job
     .expect(200);
   assert.equal(sold.body.prints, 3);
   assert.equal(sold.body.extraPrints, 1);
-  assert.equal(sold.body.total, undefined, "staff never see ticket totals");
+  assert.equal(sold.body.total, 135000, "staff see the amount collected for an order");
   assert.equal((await Booking.findById(b._id)).total, 120000 + 15000);
   assert.equal(sold.body.extraPrintKeys, undefined);
   const replay = await staff
@@ -1208,7 +1396,8 @@ test("prints follow the package quota; staff sell extra sheets and cancelled job
     .send({ ...sale, requestKey: randomUUID(), expectedTotal: 15000 })
     .expect(409, /Giá in thêm vừa thay đổi/);
 
-  await staff.delete(`/api/admin/print-jobs/${job._id}`).expect(200);
+  await staff.delete(`/api/admin/print-jobs/${job._id}`).expect(403);
+  await admin.delete(`/api/admin/print-jobs/${job._id}`).expect(200);
   const back = await request(app).get(`/api/albums/${token}`).expect(200);
   assert.equal(
     back.body.printSheets,
@@ -1259,14 +1448,13 @@ test("a closed kiosk never blocks the album: overdue sessions finish on their ow
   assert.equal((await Booking.findById(other.b._id)).status, "completed");
   await Booking.deleteMany({ _id: { $in: [b._id, other.b._id] } });
 });
-test("a broken kiosk hands the ticket to another room; a live kiosk keeps it", async () => {
+test("a used code cannot be claimed by another kiosk even after heartbeat stops", async () => {
   const { b, session } = await startSession();
   await request(app)
     .post("/api/kiosk/start")
     .send({ captureToken: session.captureToken })
     .expect(200);
-  const endsAt = (await Booking.findById(b._id)).captureEndsAt.getTime();
-  const roomB = await Room.create({ name: "Phòng B", active: true });
+  const roomB = await Room.create({ name: "Phòng B", branch: "Test branch", active: true });
   const deviceB = jwt.sign(
     { type: "kiosk", room: String(roomB._id) },
     config.secret,
@@ -1275,53 +1463,27 @@ test("a broken kiosk hands the ticket to another room; a live kiosk keeps it", a
     .post("/api/kiosk/claim")
     .send({ code: b.code, device: deviceB })
     .expect(409);
-  assert.match(busy.body.message, /đang được dùng ở Test room/);
+  assert.match(busy.body.message, /đã được sử dụng/);
   await Booking.updateOne(
     { _id: b._id },
     { captureSeenAt: new Date(Date.now() - 60000) },
   );
-  const moved = await request(app)
+  await request(app)
     .post("/api/kiosk/claim")
     .send({ code: b.code, device: deviceB })
-    .expect(200);
-  assert.equal(moved.body.booking.roomName, "Phòng B");
-  const old = await request(app)
+    .expect(409);
+  await request(app)
     .post("/api/kiosk/state")
     .send({ captureToken: session.captureToken })
-    .expect(409);
-  assert.equal(old.body.message, "Mã vé này vừa được mở ở máy chụp khác.");
-  const resumed = await request(app)
-    .post("/api/kiosk/start")
-    .send({ captureToken: moved.body.captureToken })
-    .expect(200);
-  assert.equal(
-    new Date(resumed.body.booking.captureEndsAt).getTime(),
-    endsAt,
-    "resuming keeps the remaining time",
-  );
-  await request(app)
-    .post("/api/kiosk/photo")
-    .send({
-      captureToken: moved.body.captureToken,
-      image: await jpeg(40, 30),
-      clientKey: "moved-0001",
-    })
     .expect(200);
   await request(app)
     .post("/api/kiosk/finish")
-    .send({ captureToken: moved.body.captureToken })
+    .send({ captureToken: session.captureToken })
     .expect(200);
-  const again = await request(app)
+  await request(app)
     .post("/api/kiosk/claim")
     .send({ code: b.code, device: deviceB })
-    .expect(200);
-  assert.equal(
-    again.body.completed,
-    true,
-    "finished ticket shows its QR again",
-  );
-  assert.equal(again.body.accessToken, session.accessToken);
-  assert.equal(again.body.captureToken, undefined);
+    .expect(409);
   await Booking.deleteOne({ _id: b._id });
   await Room.deleteOne({ _id: roomB._id });
 });
@@ -1494,13 +1656,14 @@ test("aggregated dashboard matches totals, paid revenue and room occupancy", asy
   );
 });
 
-test("only admins see money: staff get no revenue, no ticket totals, no monthly report", async () => {
+test("staff see order totals for collection but not revenue or monthly reports", async () => {
   // Lễ tân mới (phiên "staff" chung bị đổi mật khẩu ở bài test sau).
   await User.create({
     name: "Lễ tân Lan",
     email: "lan@test.local",
     password: await bcrypt.hash("TestPassword!123", 10),
     role: "staff",
+    branch: "Test branch",
   });
   const desk = request.agent(app);
   await desk
@@ -1532,18 +1695,22 @@ test("only admins see money: staff get no revenue, no ticket totals, no monthly 
 
   const deskList = await desk.get("/api/admin/bookings").expect(200);
   assert.ok(deskList.body.length > 0);
-  assert.ok(deskList.body.every((b) => b.total === undefined));
+  assert.ok(deskList.body.some((b) => b.code === ticket.code && b.total === 120000));
   assert.ok(deskList.body.some((b) => b.code === ticket.code && b.paid));
   const adminList = await admin.get("/api/admin/bookings").expect(200);
   assert.equal(
     adminList.body.find((b) => b.code === ticket.code).total,
     120000,
   );
-  const cancelled = await desk
+  await desk
+    .patch(`/api/admin/bookings/${ticket._id}`)
+    .send({ status: "cancelled" })
+    .expect(403);
+  const cancelled = await admin
     .patch(`/api/admin/bookings/${ticket._id}`)
     .send({ status: "cancelled" })
     .expect(200);
-  assert.equal(cancelled.body.total, undefined);
+  assert.equal(cancelled.body.status, "cancelled");
   await desk.get("/api/admin/audit").expect(404);
   await desk.get("/api/admin/settings").expect(403);
   await Booking.deleteOne({ _id: ticket._id });
@@ -1635,6 +1802,7 @@ test("admin can create, edit and deactivate every catalog resource; settings are
       email: "crud@test.local",
       password: "StaffPassword!123",
       role: "staff",
+      branch: "ABC",
       active: true,
     },
   };
@@ -1812,6 +1980,7 @@ test("admin can create, edit and deactivate every catalog resource; settings are
       email: "tam@test.local",
       password: "LeTanTam!2026",
       role: "staff",
+      branch: "ABC",
       active: true,
     })
     .expect(200);
@@ -1821,6 +1990,7 @@ test("admin can create, edit and deactivate every catalog resource; settings are
       name: "Lễ tân tạm 2",
       email: "tam@test.local",
       role: "staff",
+      branch: "ABC",
       active: true,
     })
     .expect(200);
@@ -1834,6 +2004,7 @@ test("admin can create, edit and deactivate every catalog resource; settings are
       email: "Admin@Test.Local",
       password: "Duplicate!12345",
       role: "staff",
+      branch: "ABC",
       active: true,
     })
     .expect(409);

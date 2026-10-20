@@ -52,6 +52,7 @@ before(async () => {
   photoId = photos[217]._id;
   booking = await Booking.create({
     code: "345678",
+    branch: "Test branch",
     accessToken: randomUUID(),
     status: "completed",
     prints: 7,
@@ -69,6 +70,7 @@ before(async () => {
   ]);
   job = await PrintJob.create({
     booking: booking._id,
+    branch: "Test branch",
     code: booking.code,
     name: "Test guest",
     roomName: "Test room",
@@ -79,6 +81,7 @@ before(async () => {
     name: "Test receptionist",
     email: "media-read-test@example.test",
     role: "staff",
+    branch: "Test branch",
     active: true,
   });
   cookie = `session=${jwt.sign({ sub: String(user._id), version: 0 }, config.secret)}`;

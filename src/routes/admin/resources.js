@@ -2,7 +2,7 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { User, Room, Package, Frame } from "../../models/index.js";
-import { admin, isAdmin } from "../../middleware/auth.js";
+import { admin, isAdmin, staffBranch } from "../../middleware/auth.js";
 import { fail, id, text, priceVND } from "../validation.js";
 import { moveFrame, withFrameCatalogLock } from "../../services/frame-order.js";
 import { frameListItem, hashImage } from "../../services/frame-image.js";
@@ -48,6 +48,9 @@ const resources = {
       description: z.string().max(1000),
       price: priceVND(100_000_000),
       duration: z.number().int().min(1).max(30),
+      shots: z.number().int().min(1).max(40).default(12),
+      countdownSeconds: z.number().int().min(1).max(30).default(10),
+      printSize: z.enum(["full", "strip"]).default("full"),
       prints: z.number().int().min(0).max(20),
       active,
     }),
@@ -91,7 +94,10 @@ const resources = {
       email: z.email().transform((v) => v.toLowerCase()),
       password: z.string().min(10).max(128).optional(),
       role: z.enum(["admin", "staff"]),
+      branch: z.string().trim().max(200).default(""),
       active,
+    }).refine((user) => user.role !== "staff" || Boolean(user.branch), {
+      message: "Nhân viên cần được gán chi nhánh.", path: ["branch"],
     }),
   ],
 };
@@ -102,7 +108,7 @@ for (const [route, [Model, schema]] of Object.entries(resources)) {
     ...(route === "rooms" ? [] : [admin]),
     async (req, res) => {
       const query = Model.find(
-        route === "rooms" && !isAdmin(req) ? { active: true } : {},
+        route === "rooms" && !isAdmin(req) ? { active: true, branch: staffBranch(req) } : {},
       ).sort({ createdAt: -1 });
       res.json(
         route === "frames"

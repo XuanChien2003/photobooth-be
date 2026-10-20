@@ -1,18 +1,18 @@
 import { Router } from "express";
+import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { config } from "../config.js";
-import { Booking, Room, Package } from "../models/index.js";
+import { Booking, Room, Package, KioskAttempt } from "../models/index.js";
 import { appendCapture, finishCapture } from "../services/capture.js";
 import { timed } from "../services/image-save-queue.js";
 import { directUploadRequest, photoBody, readPhotoUpload, storedOriginal } from "./photo-upload.js";
 import { createDirectUpload, directUploadsEnabled } from "../services/direct-upload.js";
 import { sensitive } from "../middleware/rate-limits.js";
-import { fail, today, token } from "./validation.js";
+import { fail, token } from "./validation.js";
 import { publicBooking } from "./booking-helpers.js";
 import {
   captureBooking,
-  KIOSK_LIVE_MS,
   touchKiosk,
   touchKioskFast,
   kioskDiag,
@@ -20,11 +20,41 @@ import {
 
 export const kioskRouter = Router();
 
+async function registerInvalidCode(deviceKey) {
+  const now = new Date();
+  const lockedUntil = new Date(now.getTime() + 5 * 60 * 1000);
+  const wasLocked = { $gt: ["$lockedUntil", now] };
+  const lockExpired = { $and: [
+    { $ne: [{ $ifNull: ["$lockedUntil", null] }, null] },
+    { $lte: ["$lockedUntil", now] },
+  ] };
+  const update = [{ $set: {
+    failures: { $cond: [wasLocked, "$failures", {
+      $cond: [lockExpired, 1, { $add: [{ $ifNull: ["$failures", 0] }, 1] }],
+    }] },
+    lockedUntil: { $cond: [wasLocked, "$lockedUntil", {
+      $cond: [lockExpired, null, {
+        $cond: [{ $gte: [{ $ifNull: ["$failures", 0] }, 4] }, lockedUntil, null],
+      }],
+    }] },
+  } }];
+  try {
+    return await KioskAttempt.findOneAndUpdate({ deviceKey }, update, { upsert: true, new: true });
+  } catch (error) {
+    // Concurrent first failures may race the unique deviceKey insert.
+    if (error.code !== 11000) throw error;
+    return KioskAttempt.findOneAndUpdate({ deviceKey }, update, { new: true });
+  }
+}
+
 kioskRouter.post("/claim", sensitive(), async (req, res) => {
   const d = z
     .object({
       code: z.string().regex(/^\d{6}$/, "Mã vé gồm 6 chữ số."),
       device: z.string({ error: "Kiosk chưa được gán phòng." }),
+      // Khổ ảnh và số tờ khách chọn ở các bước trước khi nhập mã (máy chụp cũ không gửi).
+      printSize: z.enum(["full", "strip"]).optional(),
+      prints: z.number().int().min(1).max(20).optional(),
     })
     .parse(req.body);
   let device;
@@ -36,30 +66,39 @@ kioskRouter.post("/claim", sensitive(), async (req, res) => {
   if (device.type !== "kiosk") fail(403, "Thiết bị không hợp lệ.");
   const room = await Room.findOne({ _id: device.room, active: true });
   if (!room) fail(403, "Phòng chụp đã ngừng hoạt động.");
-  // Mã đã thanh toán được dùng ở bất kỳ phòng nào, bất kỳ giờ nào trong ngày
-  // (ngày của vé hoặc ngày lễ tân cấp mã, theo giờ Việt Nam).
-  const sameDay = {
+  const deviceKey = crypto.createHash("sha256").update(d.device).digest("hex");
+  const attempts = await KioskAttempt.findOne({ deviceKey });
+  if (attempts?.lockedUntil > new Date()) {
+    const seconds = Math.ceil((attempts.lockedUntil.getTime() - Date.now()) / 1000);
+    res.set("Retry-After", String(seconds));
+    fail(429, `Nhập sai 5 lần. Vui lòng chờ ${Math.ceil(seconds / 60)} phút rồi thử lại.`);
+  }
+  const validCode = {
     code: d.code,
     paid: true,
+    status: "confirmed",
+    branch: room.branch,
     $or: [
-      { date: today() },
-      { createdAt: { $gte: new Date(`${today()}T00:00:00+07:00`) } },
+      { codeExpiresAt: { $gt: new Date() } },
+      { codeExpiresAt: { $exists: false }, createdAt: { $gt: new Date(Date.now() - 2 * 60 * 60 * 1000) } },
     ],
   };
+  if (d.printSize) {
+    // Mã đúng nhưng khác khổ đã mua: không tính là nhập sai và chưa dùng mã.
+    const paid = await Booking.findOne(validCode).select("printSize packageName").lean();
+    if (paid && (paid.printSize || "full") !== d.printSize) {
+      res.status(409).json({
+        message: `Mã này thuộc gói ${paid.packageName || ""} (${
+          paid.printSize === "strip" ? "khung bé" : "khung to"}). Vui lòng chọn lại khổ ảnh.`,
+        printSize: paid.printSize || "full",
+      });
+      return;
+    }
+  }
   const sessionId = token();
   const b = await Booking.findOneAndUpdate(
     {
-      ...sameDay,
-      status: { $in: ["confirmed", "checked_in"] },
-      // Máy chụp khác vẫn đang dùng mã này thì không cho nhận; máy đó mất tín hiệu
-      // (sập nguồn, tải lại trang…) thì máy mới nhận lại và chụp tiếp thời gian còn lại.
-      $nor: [
-        {
-          status: "checked_in",
-          room: { $ne: room._id },
-          captureSeenAt: { $gte: new Date(Date.now() - KIOSK_LIVE_MS) },
-        },
-      ],
+      ...validCode,
     },
     {
       status: "checked_in",
@@ -71,23 +110,24 @@ kioskRouter.post("/claim", sensitive(), async (req, res) => {
     { new: true },
   ).select("+accessToken");
   if (!b) {
-    const other = await Booking.findOne(sameDay).select("+accessToken");
-    if (other?.status === "checked_in")
-      fail(
-        409,
-        `Mã vé đang được dùng ở ${other.roomName}. Nếu máy đó gặp sự cố, chờ 20 giây rồi nhập lại mã.`,
-      );
-    // Khách chụp xong nhưng quên quét QR: nhập lại mã để hiện lại QR nhận ảnh.
-    if (other?.status === "completed")
-      return res.json({
-        completed: true,
-        booking: publicBooking(other),
-        accessToken: other.accessToken,
-      });
+    const other = await Booking.findOne({ code: d.code, paid: true });
+    if (other && ["checked_in", "completed"].includes(other.status))
+      fail(409, "Mã chụp đã được sử dụng. Nhờ nhân viên mở lại đường dẫn ảnh nếu cần.");
+    const failed = await registerInvalidCode(deviceKey);
+    if (failed.lockedUntil > new Date()) {
+      res.set("Retry-After", String(Math.ceil((failed.lockedUntil - Date.now()) / 1000)));
+      fail(429, "Nhập sai 5 lần. Kiosk tạm khóa 5 phút.");
+    }
     fail(
       400,
-      "Mã vé không đúng, chưa thanh toán hoặc không còn hiệu lực trong ngày.",
+      "Mã chụp không đúng, chưa thanh toán hoặc đã hết hạn 2 giờ.",
     );
+  }
+  await KioskAttempt.deleteOne({ deviceKey });
+  const extra = Math.max(0, (d.prints || 0) - (Number(b.prints) || 0));
+  if (extra) {
+    b.requestedExtraPrints = extra;
+    await Booking.updateOne({ _id: b._id }, { requestedExtraPrints: extra });
   }
   res.json({
     booking: publicBooking(b),

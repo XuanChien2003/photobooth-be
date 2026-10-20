@@ -15,6 +15,8 @@ export const config = {
   origin: process.env.CLIENT_URL || "http://localhost:5173",
   uploadDir: path.resolve(root, process.env.UPLOAD_DIR || "uploads"),
   dnpPrinter: process.env.DNP_PRINTER_NAME || "",
+  dnpStripPrinter: process.env.DNP_STRIP_PRINTER_NAME || "",
+  printAgentToken: process.env.PRINT_AGENT_TOKEN || "",
   // Giới hạn Atlas Free của tiệm; quản trị có thể ghi đè hoặc bỏ trong Hàng chờ in.
   mediaStorageLimitMB: Number(process.env.MEDIA_STORAGE_LIMIT_MB || 512),
   // Opt in only after the private R2 bucket and backend credentials exist.

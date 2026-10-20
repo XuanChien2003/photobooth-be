@@ -3,12 +3,13 @@ import mongoose from "mongoose";
 const { Schema } = mongoose;
 const bookingSchema = new Schema(
   {
-    code: { type: String, unique: true },
+    code: { type: String, unique: true, sparse: true },
     name: String,
     phone: String,
     room: { type: Schema.Types.ObjectId, ref: "Room" },
     package: { type: Schema.Types.ObjectId, ref: "Package" },
     roomName: String,
+    branch: String,
     packageName: String,
     shots: Number,
     prints: Number,
@@ -26,8 +27,10 @@ const bookingSchema = new Schema(
     },
     paymentMethod: String,
     paid: { type: Boolean, default: false },
+    paidAt: Date,
+    codeExpiresAt: Date,
     active: { type: Boolean, default: true },
-    accessToken: { type: String, unique: true, select: false },
+    accessToken: { type: String, unique: true, sparse: true, select: false },
     captureSession: { type: String, select: false },
     captureStartedAt: Date,
     captureEndsAt: Date,
@@ -36,6 +39,8 @@ const bookingSchema = new Schema(
     captureMode: { type: String, enum: ["camera", "folder", "tether"] },
     // Snapshot at sale: later package edits must not change a paid ticket's time.
     captureDuration: Number,
+    countdownSeconds: Number,
+    printSize: { type: String, enum: ["full", "strip"] },
     // Máy chụp báo "còn sống" vài giây một lần; máy khác chỉ nhận lại mã khi máy cũ im lặng.
     captureSeenAt: Date,
     // Tình trạng máy chụp gửi kèm khi báo "còn sống" (thư mục ảnh, số ảnh thấy được, lỗi đọc…)
@@ -68,6 +73,8 @@ const bookingSchema = new Schema(
     // prints: số tờ 10 × 15 cm được in (theo gói + mua thêm); printSheets: số tờ khách đã gửi in.
     printSheets: { type: Number, default: 0 },
     extraPrints: { type: Number, default: 0 },
+    // Số tờ khách chọn thêm trên kiosk, chờ lễ tân thu tiền (bán thêm tờ in sẽ trừ dần).
+    requestedExtraPrints: { type: Number, default: 0 },
     extraPrintKeys: { type: [String], select: false },
     mediaExpiresAt: Date,
     mediaDeleted: { type: Boolean, default: false },

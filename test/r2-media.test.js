@@ -734,14 +734,15 @@ test("print cancellation keeps the job and quota on R2 outage, then releases she
     sheets: [{ file }],
   });
   failDelete = true;
-  await asStaff("delete", "/api/admin/print-jobs/" + job._id).expect(500);
+  await asStaff("delete", "/api/admin/print-jobs/" + job._id).expect(403);
+  await asAdmin("delete", "/api/admin/print-jobs/" + job._id).expect(500);
   assert.ok(await PrintJob.findById(job._id));
   assert.equal((await Booking.findById(b._id)).printSheets, 1);
   failDelete = false;
-  await asStaff("delete", "/api/admin/print-jobs/" + job._id).expect(200);
+  await asAdmin("delete", "/api/admin/print-jobs/" + job._id).expect(200);
   assert.equal(await PrintJob.findById(job._id), null);
   assert.equal((await Booking.findById(b._id)).printSheets, 0);
-  await asStaff("delete", "/api/admin/print-jobs/" + job._id).expect(404);
+  await asAdmin("delete", "/api/admin/print-jobs/" + job._id).expect(404);
 });
 
 test("print sheets store R2 refs and retain 10x15 dimensions and 300dpi for download/ZIP", async () => {

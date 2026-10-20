@@ -9,6 +9,8 @@ const packageSchema = new mongoose.Schema(
     duration: Number,
     shots: Number,
     prints: Number,
+    countdownSeconds: { type: Number, default: 10 },
+    printSize: { type: String, enum: ["full", "strip"], default: "full" },
     active: Boolean,
   },
   { timestamps: true },

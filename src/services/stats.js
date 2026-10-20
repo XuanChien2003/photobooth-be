@@ -1,8 +1,9 @@
 import { Booking, PrintJob, Room } from "../models/index.js";
 
-export async function getStudioStats(currentDate, days) {
+export async function getStudioStats(currentDate, days, branch = null) {
   const [result, rooms, printQueue] = await Promise.all([
     Booking.aggregate([
+      { $match: branch ? { branch } : {} },
       {
         $facet: {
           totals: [
@@ -33,8 +34,8 @@ export async function getStudioStats(currentDate, days) {
         },
       },
     ]),
-    Room.find({ active: true }).select("name branch").lean(),
-    PrintJob.countDocuments({ status: "pending" }),
+    Room.find({ active: true, ...(branch && { branch }) }).select("name branch").lean(),
+    PrintJob.countDocuments({ status: "pending", ...(branch && { branch }) }),
   ]);
   const data = result[0];
   const totals = data.totals[0] || { bookings: 0, revenue: 0, pending: 0 };

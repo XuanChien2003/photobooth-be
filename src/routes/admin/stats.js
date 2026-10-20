@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { getMonthRevenue, getStudioStats } from "../../services/stats.js";
-import { admin, isAdmin } from "../../middleware/auth.js";
+import { admin, isAdmin, staffBranch } from "../../middleware/auth.js";
 import { today } from "../validation.js";
 
 export const statsRouter = Router();
@@ -12,7 +12,7 @@ statsRouter.get("/", async (req, res) => {
       new Date(Date.now() - (6 - i) * 86400000),
     ),
   );
-  const stats = await getStudioStats(today(), days);
+  const stats = await getStudioStats(today(), days, staffBranch(req));
   // Lễ tân: chỉ số lượt khách / lệnh in, không có doanh thu.
   if (!isAdmin(req)) {
     delete stats.revenue;

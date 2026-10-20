@@ -15,6 +15,11 @@ export function dispatchPrint(job) {
     .then(async () => {
       const directory = await fs.mkdtemp(path.join(os.tmpdir(), "photo-dnp-"));
       try {
+        const printerName = job.printSize === "strip"
+          ? config.dnpStripPrinter : config.dnpPrinter;
+        if (!printerName) throw new Error(
+          "Chưa cấu hình hàng in DNP cho ảnh dải 2 × 6 inch. Tạo hàng in riêng với 2inch cut = Enable và đặt DNP_STRIP_PRINTER_NAME.",
+        );
         await PrintJob.updateOne(
           { _id: job._id },
           {
@@ -47,7 +52,7 @@ export function dispatchPrint(job) {
               "-File",
               path.join(root, "scripts/print-dnp.ps1"),
               "-PrinterName",
-              config.dnpPrinter,
+              printerName,
               "-Manifest",
               manifest,
             ],

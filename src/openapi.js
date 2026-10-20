@@ -282,6 +282,13 @@ export const openapi = {
       Booking: object({
         _id: objectId,
         code: str("Mã vé 6 số", { example: "740787" }),
+        branch: str("Chi nhánh áp dụng cho mã chụp"),
+        paid: bool("Đã xác nhận thu tiền"),
+        paidAt: str("Thời điểm xác nhận thu tiền", { format: "date-time" }),
+        codeExpiresAt: str("Mã chụp hết hạn sau hai giờ kể từ paidAt", { format: "date-time" }),
+        shots: int("Số ảnh được chụp của gói tại lúc bán"),
+        countdownSeconds: int("Giây đếm ngược trước mỗi ảnh"),
+        printSize: enumOf(["full", "strip"]),
         name: { type: "string" },
         phone: { type: "string" },
         status: enumOf(
@@ -291,7 +298,7 @@ export const openapi = {
         packageName: { type: "string" },
         roomName: { type: "string" },
         date: str("Ngày cấp (giờ Việt Nam)", { example: "2026-10-06" }),
-        total: int("Tổng tiền (VND) — chỉ admin thấy"),
+        total: int("Tổng tiền phiếu (VND); nhân viên thấy để thu tiền"),
         paymentMethod: enumOf(["cash", "transfer"]),
         prints: int("Số tờ 10 × 15 cm được in"),
         printSheets: int("Số tờ đã gửi in"),
@@ -351,6 +358,9 @@ export const openapi = {
           description: { type: "string", example: "5 phút, 1 tờ in" },
           price: int("Giá (VND)", { example: 60000 }),
           duration: int("Thời gian chụp (phút, 1–30)", { example: 5 }),
+          shots: int("Số ảnh bắt buộc chụp (1–40)", { example: 12 }),
+          countdownSeconds: int("Giây đếm ngược trước mỗi ảnh (1–30)", { example: 10 }),
+          printSize: enumOf(["full", "strip"]),
           prints: int("Số tờ in kèm gói (0–20)", { example: 1 }),
           active: { type: "boolean", example: true },
         },
@@ -668,6 +678,34 @@ export const openapi = {
     },
 
     // ── Quầy & vé ──
+    "/api/admin/tickets/draft": {
+      post: {
+        tags: ["Quầy & vé"],
+        summary: "Tạo phiếu chờ thanh toán, chưa có mã chụp",
+        security: loggedIn,
+        requestBody: body({
+          package: objectId, requestKey: uuid,
+          room: objectId, branch: str("Chi nhánh, dùng khi không chọn phòng"),
+          name: str("Tên khách"), phone: str("Số điện thoại"),
+          expectedTotal: int("Giá đang hiển thị cho thu ngân"),
+        }, ["package", "requestKey"]),
+        responses: { ...ok("Phiếu chưa thanh toán", ref("Booking"), 201), ...errors(400, 401, 403, 409, 429) },
+      },
+    },
+    "/api/admin/tickets/{id}/activate": {
+      patch: {
+        tags: ["Quầy & vé"],
+        summary: "Xác nhận đã thu tiền và cấp mã sáu số dùng một lần",
+        security: loggedIn,
+        parameters: [pathParam("id", "ID phiếu chờ thanh toán")],
+        requestBody: body({
+          paymentReceived: { type: "boolean", enum: [true] },
+          paymentMethod: enumOf(["cash", "transfer"]),
+          expectedTotal: int("Tổng tiền đã thu"),
+        }, ["paymentReceived", "paymentMethod", "expectedTotal"]),
+        responses: { ...ok("Đã cấp mã, hết hạn sau hai giờ", ref("Booking")), ...errors(400, 401, 403, 404, 409) },
+      },
+    },
     "/api/admin/tickets/quote": {
       post: {
         tags: ["Quầy & vé"],
@@ -850,16 +888,46 @@ export const openapi = {
     },
 
     // ── Máy chụp ──
+    "/api/print-agent/claim": {
+      post: {
+        tags: ["Máy in tại tiệm"],
+        summary: "Máy Windows nhận một lệnh in thuộc chi nhánh",
+        description: "Dùng Authorization: Bearer PRINT_AGENT_TOKEN; mỗi lệnh được cấp một lease 5 phút.",
+        requestBody: body({ branch: str("Chi nhánh đặt máy in") }, ["branch"]),
+        responses: { ...ok("Lệnh in hoặc job: null"), ...errors(400, 403) },
+      },
+    },
+    "/api/print-agent/jobs/{id}/sheets/{index}": {
+      get: {
+        tags: ["Máy in tại tiệm"],
+        summary: "Tải một tờ in trong lease hiện tại",
+        parameters: [pathParam("id", "ID lệnh in"), pathParam("index", "Số thứ tự tờ", { type: "integer" })],
+        responses: { ...ok("Dữ liệu PNG/JPEG"), ...errors(400, 403, 404) },
+      },
+    },
+    "/api/print-agent/jobs/{id}/complete": {
+      post: {
+        tags: ["Máy in tại tiệm"],
+        summary: "Báo kết quả gửi vào Windows Print Spooler",
+        parameters: [pathParam("id", "ID lệnh in")],
+        requestBody: body({ leaseId: uuid, sent: bool("Đã gửi thành công"), message: str("Lỗi nếu thất bại") }, ["leaseId", "sent"]),
+        responses: { ...ok("Trạng thái spool"), ...errors(400, 403, 409) },
+      },
+    },
     "/api/kiosk/claim": {
       post: {
         tags: ["Máy chụp (kiosk)"],
         summary: "Khách nhập mã vé ở máy chụp",
         description:
-          "`device` lấy từ POST /api/admin/rooms/{id}/device. Vé đã chụp xong thì trả `completed: true` để hiện lại QR.",
+          "`device` lấy từ POST /api/admin/rooms/{id}/device. Vé đã chụp xong thì trả `completed: true` để hiện lại QR. " +
+          "`printSize` khác khổ của gói đã mua trả 409 kèm `printSize` đúng (không tính nhập sai, mã chưa bị dùng). " +
+          "`prints` vượt số tờ của gói được ghi vào `requestedExtraPrints`, chờ lễ tân thu tiền.",
         requestBody: body(
           {
             code: str("Mã vé 6 số", { pattern: "^\\d{6}$" }),
             device: str("Mã máy chụp của phòng"),
+            printSize: { type: "string", enum: ["full", "strip"], description: "Khổ khách chọn trên máy chụp" },
+            prints: { type: "integer", minimum: 1, maximum: 20, description: "Số tờ 10 × 15 cm khách chọn" },
           },
           ["code", "device"],
           { code: "123456", device: "" },

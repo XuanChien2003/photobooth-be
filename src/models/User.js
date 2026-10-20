@@ -7,6 +7,7 @@ const userSchema = new mongoose.Schema(
     email: { type: String, unique: true },
     password: { type: String, select: false },
     role: { type: String, enum: ["admin", "staff"] },
+    branch: { type: String, default: "" },
     active: { type: Boolean, default: true },
     sessionVersion: { type: Number, default: 0, select: false },
   },

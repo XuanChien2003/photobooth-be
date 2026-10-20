@@ -10,12 +10,14 @@ if (
   throw Error(
     "Cần ADMIN_EMAIL và ADMIN_PASSWORD tối thiểu 10 ký tự trong be/.env.",
   );
+// Đăng nhập so khớp email dạng chữ thường, nên tài khoản cũng phải lưu chữ thường.
+const adminEmail = process.env.ADMIN_EMAIL.trim().toLowerCase();
 try {
   await mongoose.connect(config.mongo, { serverSelectionTimeoutMS: 10000 });
-  if (!(await User.exists({ email: process.env.ADMIN_EMAIL })))
+  if (!(await User.exists({ email: adminEmail })))
     await User.create({
       name: "Quản trị viên",
-      email: process.env.ADMIN_EMAIL,
+      email: adminEmail,
       password: await bcrypt.hash(process.env.ADMIN_PASSWORD, 12),
       role: "admin",
     });

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { Booking, Room, Setting } from "../../models/index.js";
-import { hideMoney } from "../../middleware/auth.js";
+import { hideMoney, isAdmin, requireBranch, staffBranch } from "../../middleware/auth.js";
 import { fail, id, date } from "../validation.js";
 import { KIOSK_LIVE_MS } from "../kiosk-session.js";
 
@@ -9,6 +9,8 @@ export const bookingsRouter = Router();
 
 bookingsRouter.get("/bookings", async (req, res) => {
   const q = {};
+  const assigned = staffBranch(req);
+  if (assigned) q.branch = assigned;
   if (req.query.code)
     q.code = z
       .string()
@@ -32,26 +34,38 @@ bookingsRouter.patch("/bookings/:id", async (req, res) => {
   const d = z
     .object({
       status: z
-        .enum(["confirmed", "checked_in", "completed", "cancelled"])
+        .enum(["confirmed", "cancelled"])
         .optional(),
       printed: z.boolean().optional(),
+      paymentReceived: z.boolean().optional(),
     })
     .parse(req.body);
   const b = await Booking.findById(id.parse(req.params.id));
   if (!b) fail(404, "Không tìm thấy vé.");
+  requireBranch(req, b.branch);
+  if (d.status === "cancelled" && !isAdmin(req))
+    fail(403, "Chỉ chủ cửa hàng được hủy mã chụp.");
   const allowed = {
     pending: ["confirmed", "cancelled"],
-    confirmed: ["checked_in", "cancelled"],
-    checked_in: ["completed"],
+    confirmed: ["cancelled"],
+    checked_in: [],
     completed: [],
     cancelled: [],
   };
   if (d.status && !allowed[b.status].includes(d.status))
     fail(409, "Không thể chuyển trạng thái này.");
+  if (d.status === "confirmed" && !d.paymentReceived)
+    fail(400, "Vui lòng xác nhận đã nhận đủ tiền của khách.");
+  if (d.status === "confirmed" && !b.code)
+    fail(409, "Vui lòng kích hoạt mã tại quầy sau khi nhận tiền.");
   if (d.printed !== undefined && b.status !== "completed")
     fail(400, "Phiên chụp chưa hoàn tất.");
-  const changes = { ...d };
-  if (d.status === "confirmed") changes.paid = true;
+  const { paymentReceived, ...changes } = d;
+  if (d.status === "confirmed") {
+    changes.paid = true;
+    changes.paidAt = new Date();
+    changes.codeExpiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
+  }
   if (d.status === "cancelled") {
     changes.active = false;
     changes.paid = false;
@@ -78,6 +92,9 @@ bookingsRouter.post("/bookings/:id/prints", async (req, res) => {
     })
     .parse(req.body);
   const bookingId = id.parse(req.params.id);
+  const target = await Booking.findById(bookingId).select("branch").lean();
+  if (!target) fail(404, "Không tìm thấy vé.");
+  requireBranch(req, target.branch);
   const settings = (await Setting.findOne({ key: "studio" }).lean())?.value;
   const amount = d.sheets * (Number(settings?.extraPrintPrice) || 0);
   if (d.expectedTotal !== amount)
@@ -95,6 +112,9 @@ bookingsRouter.post("/bookings/:id/prints", async (req, res) => {
         $set: {
           prints: { $add: [{ $ifNull: ["$prints", 1] }, d.sheets] },
           extraPrints: { $add: [{ $ifNull: ["$extraPrints", 0] }, d.sheets] },
+          requestedExtraPrints: {
+            $max: [0, { $subtract: [{ $ifNull: ["$requestedExtraPrints", 0] }, d.sheets] }],
+          },
           total: { $add: [{ $ifNull: ["$total", 0] }, amount] },
           extraPrintKeys: {
             $concatArrays: [
@@ -129,10 +149,12 @@ bookingsRouter.post("/bookings/:id/prints", async (req, res) => {
 // Bảng phòng cho lễ tân: phòng nào trống, phòng nào đang chụp và còn bao lâu.
 bookingsRouter.get("/rooms/live", async (req, res) => {
   const now = Date.now();
+  const assigned = staffBranch(req);
   const [rooms, sessions] = await Promise.all([
-    Room.find({ active: true }).sort({ name: 1 }).select("name branch").lean(),
+    Room.find({ active: true, ...(assigned && { branch: assigned }) }).sort({ name: 1 }).select("name branch").lean(),
     Booking.find({
       status: "checked_in",
+      ...(assigned && { branch: assigned }),
       room: { $ne: null },
       $or: [
         { captureEndsAt: { $gt: new Date(now) } },
