@@ -78,7 +78,7 @@ publicRouter.get("/frames/:id/image", async (req, res) => {
 publicRouter.get("/stickers/:id/image", async (req, res) => {
   const sticker = await Sticker.findById(id.parse(req.params.id)).select("image").lean();
   if (!sendDataImage(req, res, sticker?.image))
-    res.status(404).json({ message: "Không tìm thấy ảnh sticker." });
+    res.status(404).json({ message: "Không tìm thấy ảnh nhãn dán." });
 });
 publicRouter.get("/studio/kiosk-idle", async (req, res) => {
   const setting = await Setting.findOne({ key: "studio" }).lean();

@@ -199,12 +199,12 @@ try {
   await admin
     .getByRole("button", { name: "Phòng & chi nhánh", exact: true })
     .click();
-  await admin.getByRole("button", { name: /^Cài kiosk cho / }).click();
+  await admin.getByRole("button", { name: /^Cài máy chụp cho / }).click();
   const kioskUrl = await admin
-    .getByRole("link", { name: "Mở kiosk", exact: true })
+    .getByRole("link", { name: "Mở máy chụp", exact: true })
     .getAttribute("href");
   await admin
-    .getByRole("dialog", { name: "Cài kiosk" })
+    .getByRole("dialog", { name: "Cài máy chụp" })
     .getByRole("button", { name: "Đóng" })
     .click();
 

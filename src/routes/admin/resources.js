@@ -93,11 +93,11 @@ const resources = {
       name: text,
       order: z.number().int().min(0).max(999).default(0),
       image: z
-        .string({ error: "Vui lòng chọn ảnh sticker." })
-        .max(700_000, "Ảnh sticker quá lớn (tối đa khoảng 500 KB).")
+        .string({ error: "Vui lòng chọn ảnh nhãn dán." })
+        .max(700_000, "Ảnh nhãn dán quá lớn (tối đa khoảng 500 KB).")
         .regex(
           /^data:image\/(png|webp);base64,[A-Za-z0-9+/]+={0,2}$/,
-          "Sticker cần là ảnh PNG hoặc WebP (nên có nền trong suốt).",
+          "Nhãn dán cần là ảnh PNG hoặc WebP (nên có nền trong suốt).",
         ),
       active,
     }),

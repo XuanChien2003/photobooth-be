@@ -51,7 +51,7 @@ kioskRouter.post("/claim", sensitive(), async (req, res) => {
   const d = z
     .object({
       code: z.string().regex(/^\d{6}$/, "Mã vé gồm 6 chữ số."),
-      device: z.string({ error: "Kiosk chưa được gán phòng." }),
+      device: z.string({ error: "Máy chụp chưa được gán phòng." }),
       // Khổ ảnh và số tờ khách chọn ở các bước trước khi nhập mã (máy chụp cũ không gửi).
       printSize: z.enum(["full", "strip"]).optional(),
       prints: z.number().int().min(1).max(20).optional(),
@@ -61,7 +61,7 @@ kioskRouter.post("/claim", sensitive(), async (req, res) => {
   try {
     device = jwt.verify(d.device, config.secret);
   } catch {
-    fail(403, "Kiosk chưa được gán phòng hoặc liên kết đã hết hạn.");
+    fail(403, "Máy chụp chưa được gán phòng hoặc liên kết đã hết hạn.");
   }
   if (device.type !== "kiosk") fail(403, "Thiết bị không hợp lệ.");
   const room = await Room.findOne({ _id: device.room, active: true });
@@ -125,7 +125,7 @@ kioskRouter.post("/claim", sensitive(), async (req, res) => {
     const failed = await registerInvalidCode(deviceKey);
     if (failed.lockedUntil > new Date()) {
       res.set("Retry-After", String(Math.ceil((failed.lockedUntil - Date.now()) / 1000)));
-      fail(429, "Nhập sai 5 lần. Kiosk tạm khóa 5 phút.");
+      fail(429, "Nhập sai 5 lần. Máy chụp tạm khóa 5 phút.");
     }
     fail(
       400,
