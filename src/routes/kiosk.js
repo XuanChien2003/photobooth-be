@@ -52,9 +52,6 @@ kioskRouter.post("/claim", sensitive(), async (req, res) => {
     .object({
       code: z.string().regex(/^\d{6}$/, "Mã vé gồm 6 chữ số."),
       device: z.string({ error: "Máy chụp chưa được gán phòng." }),
-      // Khổ ảnh và số tờ khách chọn ở các bước trước khi nhập mã (máy chụp cũ không gửi).
-      printSize: z.enum(["full", "strip"]).optional(),
-      prints: z.number().int().min(1).max(20).optional(),
     })
     .parse(req.body);
   let device;
@@ -84,40 +81,18 @@ kioskRouter.post("/claim", sensitive(), async (req, res) => {
     ],
   };
   const sessionId = token();
-  // Một lệnh duy nhất: nhận mã đúng khổ đã mua và ghi số tờ khách chọn thêm (vé cũ không có khổ = khổ to).
+  // Claim the paid ticket atomically. The ticket alone determines the package and print quota.
   const b = await Booking.findOneAndUpdate(
-    {
-      ...validCode,
-      ...(d.printSize && {
-        printSize: d.printSize === "full" ? { $in: ["full", null] } : d.printSize,
-      }),
-    },
+    validCode,
     [{ $set: {
       status: "checked_in",
       room: room._id,
       roomName: { $literal: room.name },
       captureSession: { $literal: sessionId },
       captureSeenAt: "$$NOW",
-      ...(d.prints && {
-        requestedExtraPrints: {
-          $max: [0, { $subtract: [d.prints, { $ifNull: ["$prints", 0] }] }],
-        },
-      }),
     } }],
     { new: true },
   ).select("+accessToken");
-  if (!b && d.printSize) {
-    // Mã đúng nhưng khác khổ đã mua: không tính là nhập sai và chưa dùng mã.
-    const paid = await Booking.findOne(validCode).select("printSize packageName").lean();
-    if (paid) {
-      res.status(409).json({
-        message: `Mã này thuộc gói ${paid.packageName || ""} (${
-          paid.printSize === "strip" ? "khung bé" : "khung to"}). Vui lòng chọn lại khổ ảnh.`,
-        printSize: paid.printSize || "full",
-      });
-      return;
-    }
-  }
   if (!b) {
     const other = await Booking.findOne({ code: d.code, paid: true });
     if (other && ["checked_in", "completed"].includes(other.status))

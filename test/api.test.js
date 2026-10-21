@@ -295,7 +295,7 @@ test("five simultaneous invalid kiosk codes cause one five-minute device lock", 
   }
 });
 
-test("kiosk size choice must match the paid package and extra prints wait for counter payment", async () => {
+test("kiosk uses the paid package and only staff can sell extra prints", async () => {
   const sale = { name: "Mellow", room: String(room._id), package: String(pack._id),
     requestKey: randomUUID(), expectedTotal: pack.price };
   const draft = await staff.post("/api/admin/tickets/draft").send(sale).expect(201);
@@ -304,15 +304,12 @@ test("kiosk size choice must match the paid package and extra prints wait for co
   try {
     const { body: ticket } = await staff.patch(`/api/admin/tickets/${draft.body._id}/activate`)
       .send({ paymentReceived: true, paymentMethod: "cash", expectedTotal: pack.price }).expect(200);
-    const wrong = await request(app).post("/api/kiosk/claim")
-      .send({ code: ticket.code, device, printSize: "strip", prints: 2 }).expect(409);
-    assert.equal(wrong.body.printSize, "full");
-    assert.equal(await KioskAttempt.countDocuments({ deviceKey }), 0, "a size mismatch is not a wrong code");
-    assert.equal((await Booking.findById(ticket._id)).status, "confirmed", "the code stays unused");
     const claimed = await request(app).post("/api/kiosk/claim")
-      .send({ code: ticket.code, device, printSize: "full", prints: pack.prints + 2 }).expect(200);
-    assert.equal(claimed.body.booking.requestedExtraPrints, 2);
-    assert.equal(claimed.body.booking.prints, pack.prints, "unpaid extras are not printable");
+      .send({ code: ticket.code, device, printSize: "strip", prints: pack.prints + 2 }).expect(200);
+    assert.equal(claimed.body.booking.printSize, pack.printSize || "full");
+    assert.equal(claimed.body.booking.prints, pack.prints);
+    assert.equal(claimed.body.booking.requestedExtraPrints || 0, 0);
+    assert.equal(await KioskAttempt.countDocuments({ deviceKey }), 0);
     const sold = await staff.post(`/api/admin/bookings/${ticket._id}/prints`).send({
       sheets: 2, paymentMethod: "cash", paymentReceived: true,
       expectedTotal: 2 * ((await Setting.findOne({ key: "studio" }))?.value?.extraPrintPrice || 0),

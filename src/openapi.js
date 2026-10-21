@@ -954,14 +954,11 @@ export const openapi = {
         summary: "Khách nhập mã vé ở máy chụp",
         description:
           "`device` lấy từ POST /api/admin/rooms/{id}/device. Vé đã chụp xong thì trả `completed: true` để hiện lại QR. " +
-          "`printSize` khác khổ của gói đã mua trả 409 kèm `printSize` đúng (không tính nhập sai, mã chưa bị dùng). " +
-          "`prints` vượt số tờ của gói được ghi vào `requestedExtraPrints`, chờ lễ tân thu tiền.",
+          "Gói chụp, khổ ảnh và số tờ in lấy từ vé đã thanh toán ở quầy; kiosk không bán thêm.",
         requestBody: body(
           {
             code: str("Mã vé 6 số", { pattern: "^\\d{6}$" }),
             device: str("Mã máy chụp của phòng"),
-            printSize: { type: "string", enum: ["full", "strip"], description: "Khổ khách chọn trên máy chụp" },
-            prints: { type: "integer", minimum: 1, maximum: 20, description: "Số tờ 10 × 15 cm khách chọn" },
           },
           ["code", "device"],
           { code: "123456", device: "" },
