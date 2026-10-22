@@ -458,6 +458,69 @@ test("a Windows print agent leases one branch job once and reports spool dispatc
   }
 });
 
+test("order filters include the latest print preview and staff can reprint it", async () => {
+  const booking = await Booking.create({
+    name: "Khách đơn hàng",
+    phone: "0909000111",
+    code: "787878",
+    accessToken: randomUUID().replaceAll("-", ""),
+    branch: "Test branch",
+    roomName: room.name,
+    packageName: pack.name,
+    date: "2026-10-22",
+    status: "completed",
+    paid: true,
+    paymentMethod: "cash",
+    total: 120000,
+    prints: 2,
+  });
+  const source = await PrintJob.create({
+    booking: booking._id,
+    code: booking.code,
+    name: booking.name,
+    roomName: booking.roomName,
+    branch: booking.branch,
+    frameName: "Basic 4 ô",
+    file: "order-preview.jpg",
+    sheets: [{ file: "order-preview.jpg", width: 1200, height: 1800 }],
+    width: 1200,
+    height: 1800,
+    copies: 1,
+    status: "printed",
+  });
+  try {
+    const result = await staff
+      .get("/api/admin/bookings")
+      .query({
+        from: "2026-10-22",
+        to: "2026-10-22",
+        room: room.name,
+        paymentMethod: "cash",
+        status: "completed",
+      })
+      .expect(200);
+    const order = result.body.find((item) => item._id === String(booking._id));
+    assert.equal(order.latestPrint._id, String(source._id));
+    assert.equal(order.latestPrint.frameName, "Basic 4 ô");
+    assert.equal(
+      order.latestPrint.image,
+      `/api/albums/${booking.accessToken}/prints/${source._id}`,
+    );
+    const repeated = await staff
+      .post(`/api/admin/bookings/${booking._id}/reprint`)
+      .send({ jobId: String(source._id), copies: 3 })
+      .expect(201);
+    const stored = await PrintJob.findById(repeated.body._id);
+    assert.equal(stored.copies, 3);
+    assert.equal(stored.file, source.file);
+    assert.equal(stored.status, "pending");
+    assert.equal(stored.booking.toString(), booking._id.toString());
+  } finally {
+    await PrintJob.deleteMany({ booking: booking._id });
+    await Booking.deleteOne({ _id: booking._id });
+  }
+});
+
 test("payment transitions are enforced and cancelled tickets cannot be revived", async () => {
   const { body: b } = await staff
     .post("/api/admin/tickets")

@@ -813,7 +813,7 @@ export const openapi = {
     "/api/admin/bookings": {
       get: {
         tags: ["Quầy & vé"],
-        summary: "Danh sách vé (500 vé mới nhất)",
+        summary: "Danh sách đơn hàng (500 đơn mới nhất)",
         description:
           "Lễ tân không thấy tổng tiền.\n\n**Kiểm tra máy chụp có thấy ảnh máy ảnh không:** nhập `code` = mã vé đang chụp → xem `captureDiag`: `folder` (thư mục đang đọc), `jpegs` (số ảnh JPG thấy trong thư mục), `fresh` / `imported` (ảnh mới trong phiên / đã nhận), `access` (quyền đọc), `error` (lỗi đọc), `at` (lần báo gần nhất — máy chụp báo 2 giây/lần).",
         security: loggedIn,
@@ -823,6 +823,10 @@ export const openapi = {
             type: "string",
             example: "2026-10-06",
           }),
+          query("from", "Từ ngày", { type: "string", example: "2026-10-01" }),
+          query("to", "Đến ngày", { type: "string", example: "2026-10-31" }),
+          query("room", "Tên máy / phòng", { type: "string", example: "Phòng 01" }),
+          query("paymentMethod", "Hình thức thanh toán", enumOf(["cash", "transfer"])),
           query(
             "status",
             "Lọc theo trạng thái",
@@ -890,6 +894,27 @@ export const openapi = {
         responses: {
           ...ok("Đã cộng tờ in", ref("Booking")),
           ...errors(400, 401, 404, 409),
+        },
+      },
+    },
+    "/api/admin/bookings/{id}/reprint": {
+      post: {
+        tags: ["Quầy & vé"],
+        summary: "In lại file ảnh đã ghép của một đơn hàng",
+        description:
+          "Tạo lệnh in mới từ file còn hạn của lệnh cũ; không trừ thêm hạn mức album.",
+        security: loggedIn,
+        parameters: [pathParam("id", "Mã đơn hàng (_id)")],
+        requestBody: body(
+          {
+            jobId: str("Mã lệnh in nguồn"),
+            copies: int("Số bản (1–20)", { minimum: 1, maximum: 20 }),
+          },
+          ["jobId", "copies"],
+        ),
+        responses: {
+          ...ok("Lệnh in lại đã tạo"),
+          ...errors(400, 401, 404),
         },
       },
     },

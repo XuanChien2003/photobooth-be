@@ -1,9 +1,14 @@
 import { Router } from "express";
 import { z } from "zod";
-import { Booking, Room, Setting } from "../../models/index.js";
+import { config } from "../../config.js";
+import { Booking, PrintJob, Room, Setting } from "../../models/index.js";
 import { hideMoney, isAdmin, requireBranch, staffBranch } from "../../middleware/auth.js";
+import { dispatchPrint } from "../../services/dnp.js";
+import { MEDIA_TTL_MS } from "../../services/media.js";
+import { printEvents } from "../../services/print-events.js";
 import { fail, id, date } from "../validation.js";
 import { KIOSK_LIVE_MS } from "../kiosk-session.js";
+import { publicJob } from "../print-helpers.js";
 
 export const bookingsRouter = Router();
 
@@ -17,10 +22,19 @@ bookingsRouter.get("/bookings", async (req, res) => {
       .regex(/^\d{6}$/, "Mã vé gồm 6 chữ số.")
       .parse(req.query.code);
   if (req.query.date) q.date = date.parse(req.query.date);
+  if (req.query.from || req.query.to) {
+    q.date = {};
+    if (req.query.from) q.date.$gte = date.parse(req.query.from);
+    if (req.query.to) q.date.$lte = date.parse(req.query.to);
+  }
   if (req.query.status)
     q.status = z
       .enum(["pending", "confirmed", "checked_in", "completed", "cancelled"])
       .parse(req.query.status);
+  if (req.query.room)
+    q.roomName = z.string().trim().min(1).max(200).parse(req.query.room);
+  if (req.query.paymentMethod)
+    q.paymentMethod = z.enum(["cash", "transfer"]).parse(req.query.paymentMethod);
   // Danh sách tự làm mới 20 giây/lần ở nhiều màn hình: không kèm mảng ảnh (giao diện không dùng)
   // và chẩn đoán máy chụp; tra đúng một mã vé (Swagger) mới trả đủ để xem máy chụp đang thấy gì.
   const list = await Booking.find(q)
@@ -28,7 +42,29 @@ bookingsRouter.get("/bookings", async (req, res) => {
     .sort({ createdAt: -1 })
     .limit(500)
     .lean();
-  res.json(list.map((b) => hideMoney(req, b)));
+  const jobs = list.length
+    ? await PrintJob.find({
+        booking: { $in: list.map((booking) => booking._id) },
+        createdAt: { $gt: new Date(Date.now() - MEDIA_TTL_MS) },
+      })
+        .sort({ createdAt: -1 })
+        .lean()
+    : [];
+  const latest = new Map();
+  for (const job of jobs) {
+    const key = String(job.booking);
+    if (!latest.has(key)) latest.set(key, job);
+  }
+  res.json(
+    list.map((booking) => {
+      const job = latest.get(String(booking._id));
+      const visible = hideMoney(req, booking);
+      return {
+        ...visible,
+        latestPrint: job ? publicJob(job, booking.accessToken) : null,
+      };
+    }),
+  );
 });
 bookingsRouter.patch("/bookings/:id", async (req, res) => {
   const d = z
@@ -151,6 +187,48 @@ bookingsRouter.post("/bookings/:id/prints", async (req, res) => {
   res.json(
     hideMoney(req, { ...updated.toObject(), extraPrintKeys: undefined }),
   );
+});
+
+// In lại đúng file khách đã gửi mà không bắt khách ghép khung lần nữa. Đây là thao tác
+// vận hành (kẹt giấy, muốn thêm bản giống hệt), nên không trừ thêm hạn mức tờ in của album.
+bookingsRouter.post("/bookings/:id/reprint", async (req, res) => {
+  const d = z
+    .object({
+      jobId: id,
+      copies: z.number().int().min(1).max(20),
+    })
+    .parse(req.body);
+  const booking = await Booking.findById(id.parse(req.params.id)).select(
+    "+accessToken branch code name roomName",
+  );
+  if (!booking) fail(404, "Không tìm thấy đơn hàng.");
+  requireBranch(req, booking.branch);
+  const source = await PrintJob.findOne({
+    _id: d.jobId,
+    booking: booking._id,
+    createdAt: { $gt: new Date(Date.now() - MEDIA_TTL_MS) },
+  });
+  if (!source) fail(404, "File in không còn hoặc đã hết hạn lưu trữ.");
+  const job = await PrintJob.create({
+    booking: booking._id,
+    code: booking.code,
+    name: booking.name,
+    roomName: booking.roomName,
+    branch: booking.branch,
+    copies: d.copies,
+    frameName: source.frameName,
+    printSize: source.printSize || "full",
+    file: source.file,
+    sheets: source.sheets,
+    width: source.width,
+    height: source.height,
+    spoolStatus:
+      config.dnpPrinter || config.printAgentToken ? "queued" : "idle",
+  });
+  dispatchPrint(job);
+  const output = publicJob(job, booking.accessToken);
+  printEvents.emit("print", { ...output, branch: booking.branch });
+  res.status(201).json(output);
 });
 // Bảng phòng cho lễ tân: phòng nào trống, phòng nào đang chụp và còn bao lâu.
 bookingsRouter.get("/rooms/live", async (req, res) => {
