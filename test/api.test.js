@@ -382,9 +382,16 @@ test("admins manage image stickers and the kiosk idle screen; the catalog links 
     await admin.put("/api/admin/settings/kiosk")
       .send({ idleTitle: "Chào bạn", idleSubtitle: "Chạm để chụp", idleImage: image }).expect(200);
     await admin.put("/api/admin/settings/extra-print-price").send({ extraPrintPrice: 15000 }).expect(200);
+    await staff.put("/api/admin/settings/filters")
+      .send({ enabledFilters: ["original", "warm"] }).expect(403);
+    await admin.put("/api/admin/settings/filters")
+      .send({ enabledFilters: ["warm", "mono"] }).expect(200);
+    await admin.put("/api/admin/settings/filters")
+      .send({ enabledFilters: ["made-up-filter"] }).expect(400);
     const settings = (await request(app).get("/api/catalog").expect(200)).body.settings;
     assert.equal(settings.kiosk.idleTitle, "Chào bạn");
     assert.match(settings.kiosk.idleImage, /^\/api\/studio\/kiosk-idle\?v=/);
+    assert.deepEqual(settings.enabledFilters, ["original", "warm", "mono"]);
     await request(app).get(settings.kiosk.idleImage).expect(200);
     await admin.delete(`/api/admin/stickers/${sticker.body._id}`).expect(200);
     assert.equal((await request(app).get("/api/catalog")).body.stickers.some((s) => s._id === sticker.body._id), false);
@@ -1912,6 +1919,10 @@ test("admin can create, edit and deactivate every catalog resource; settings are
       name: "CRUD room",
       description: "A room",
       branch: "ABC",
+      machineCode: "MAY-01",
+      model: "Boothie Pro",
+      importedAt: "2026-01-02",
+      expiresAt: "2027-01-02",
       active: true,
     },
     packages: {
@@ -1945,6 +1956,10 @@ test("admin can create, edit and deactivate every catalog resource; settings are
       .expect(200);
     assert.ok(created.body._id);
     assert.equal(created.body.password, undefined);
+    if (resource === "rooms") {
+      assert.equal(created.body.machineCode, "MAY-01");
+      assert.equal(created.body.model, "Boothie Pro");
+    }
     const changed = {
       ...body,
       name: body.name + " updated",

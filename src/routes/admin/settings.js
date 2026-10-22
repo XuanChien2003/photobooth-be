@@ -48,6 +48,22 @@ settingsRouter.put("/kiosk", admin, async (req, res) => {
   res.json(saved.value);
 });
 
+// Các bộ lọc màu được bật cho khách. Công thức xử lý ảnh nằm trong ứng dụng;
+// quản trị viên chỉ bật/tắt để ảnh xem trước và ảnh xuất luôn giống nhau.
+settingsRouter.put("/filters", admin, async (req, res) => {
+  const enabledFilters = z
+    .array(z.enum(["original", "soft", "warm", "film", "mono", "vintage", "retro"]))
+    .min(1, "Cần bật ít nhất một bộ lọc.")
+    .transform((items) => [...new Set(["original", ...items])])
+    .parse(req.body.enabledFilters);
+  const saved = await Setting.findOneAndUpdate(
+    { key: "studio" },
+    { $set: { "value.enabledFilters": enabledFilters } },
+    { upsert: true, new: true },
+  );
+  res.json(saved.value);
+});
+
 settingsRouter.put("/", admin, async (req, res) => {
   const value = z
     .object({
