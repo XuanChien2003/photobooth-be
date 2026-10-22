@@ -234,7 +234,7 @@ albumsRouter.post("/:token/print-pack", printLimit, printBody, async (req, res) 
     return res.json({ ...publicJob(verifyReplay(existing)), ...quota(b) });
   requireMedia(b);
   const n = d.sheets.length;
-  const reserved = await reserveSheets(b, n);
+  const reserved = await reserveSheets(b, n, d.frameName);
   if (!reserved) fail(409, quotaMessage(printQuota(b), b.printSheets || 0));
   const files = [], saves = [];
   try {

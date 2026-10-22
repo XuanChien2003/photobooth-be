@@ -11,6 +11,8 @@ const packageSchema = new mongoose.Schema(
     prints: Number,
     countdownSeconds: { type: Number, default: 10 },
     printSize: { type: String, enum: ["full", "strip"], default: "full" },
+    // Chi nhánh được bán gói này; để trống = mọi chi nhánh (cấu hình chung).
+    branches: { type: [String], default: [] },
     active: Boolean,
   },
   { timestamps: true },

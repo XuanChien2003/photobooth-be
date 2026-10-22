@@ -35,6 +35,33 @@ export async function auth(req, res, next) {
   }
 }
 export const isAdmin = (req) => req.user?.role === "admin";
+// Quyền chủ cửa hàng cấp cho từng nhân viên (Tài khoản → Phân quyền). Tài khoản chưa lưu quyền
+// dùng bộ mặc định: đúng những việc lễ tân làm được trước khi có phân quyền.
+export const STAFF_PERMISSIONS = [
+  "revenue:view",
+  "orders:export",
+  "orders:cancel",
+  "print:operate",
+  "shift:operate",
+  "rooms:setup",
+];
+export const DEFAULT_STAFF_PERMISSIONS = [
+  "orders:export",
+  "print:operate",
+  "shift:operate",
+  "rooms:setup",
+];
+export const permissionsOf = (user) =>
+  user?.role === "admin"
+    ? STAFF_PERMISSIONS
+    : (user?.permissions ?? DEFAULT_STAFF_PERMISSIONS).filter((p) => STAFF_PERMISSIONS.includes(p));
+export const can = (req, permission) => permissionsOf(req.user).includes(permission);
+export const allow = (permission) => (req, res, next) =>
+  can(req, permission)
+    ? next()
+    : res
+        .status(403)
+        .json({ message: "Tài khoản chưa được cấp quyền thực hiện thao tác này." });
 export function staffBranch(req) {
   if (isAdmin(req)) return null;
   const branch = req.user?.branch?.trim();

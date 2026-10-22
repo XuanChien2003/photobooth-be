@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { config } from "../../config.js";
 import { Booking, PrintJob, Room, Setting } from "../../models/index.js";
-import { hideMoney, isAdmin, requireBranch, staffBranch } from "../../middleware/auth.js";
+import { allow, can, hideMoney, requireBranch, staffBranch } from "../../middleware/auth.js";
 import { dispatchPrint } from "../../services/dnp.js";
 import { MEDIA_TTL_MS } from "../../services/media.js";
 import { printEvents } from "../../services/print-events.js";
@@ -79,8 +79,8 @@ bookingsRouter.patch("/bookings/:id", async (req, res) => {
   const b = await Booking.findById(id.parse(req.params.id));
   if (!b) fail(404, "Không tìm thấy vé.");
   requireBranch(req, b.branch);
-  if (d.status === "cancelled" && !isAdmin(req))
-    fail(403, "Chỉ chủ cửa hàng được hủy mã chụp.");
+  if (d.status === "cancelled" && !can(req, "orders:cancel"))
+    fail(403, "Chỉ chủ cửa hàng hoặc nhân viên được cấp quyền hủy đơn mới hủy được mã chụp.");
   const allowed = {
     pending: ["confirmed", "cancelled"],
     confirmed: ["cancelled"],
@@ -115,7 +115,7 @@ bookingsRouter.patch("/bookings/:id", async (req, res) => {
   res.json(hideMoney(req, updated.toObject()));
 });
 // Bán thêm tờ in tại quầy: cộng số tờ cho vé và cộng tiền vào doanh thu của vé.
-bookingsRouter.post("/bookings/:id/prints", async (req, res) => {
+bookingsRouter.post("/bookings/:id/prints", allow("print:operate"), async (req, res) => {
   const d = z
     .object({
       sheets: z.number().int().min(1).max(20),
@@ -191,7 +191,7 @@ bookingsRouter.post("/bookings/:id/prints", async (req, res) => {
 
 // In lại đúng file khách đã gửi mà không bắt khách ghép khung lần nữa. Đây là thao tác
 // vận hành (kẹt giấy, muốn thêm bản giống hệt), nên không trừ thêm hạn mức tờ in của album.
-bookingsRouter.post("/bookings/:id/reprint", async (req, res) => {
+bookingsRouter.post("/bookings/:id/reprint", allow("print:operate"), async (req, res) => {
   const d = z
     .object({
       jobId: id,

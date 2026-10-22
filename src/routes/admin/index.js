@@ -3,8 +3,7 @@ import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import { config } from "../../config.js";
 import { Room } from "../../models/index.js";
-import { auth } from "../../middleware/auth.js";
-import { requireBranch } from "../../middleware/auth.js";
+import { allow, auth, requireBranch } from "../../middleware/auth.js";
 import { fail, id } from "../validation.js";
 import { ticketsRouter } from "./tickets.js";
 import { printsRouter } from "./prints.js";
@@ -14,6 +13,7 @@ import { settingsRouter } from "./settings.js";
 import { resourcesRouter } from "./resources.js";
 import { storageRouter } from "./storage.js";
 import { shiftsRouter } from "./shifts.js";
+import { studioRouter } from "./studio.js";
 
 export const adminRouter = Router();
 
@@ -26,7 +26,7 @@ adminRouter.use("/stats", statsRouter);
 adminRouter.use("/storage", storageRouter);
 adminRouter.use("/shifts", shiftsRouter);
 
-adminRouter.post("/rooms/:id/device", async (req, res) => {
+adminRouter.post("/rooms/:id/device", allow("rooms:setup"), async (req, res) => {
   const room = await Room.findById(id.parse(req.params.id));
   if (!room) fail(404, "Không tìm thấy phòng.");
   if (!room.active) fail(409, "Phòng chụp đã ngừng hoạt động.");
@@ -40,4 +40,5 @@ adminRouter.post("/rooms/:id/device", async (req, res) => {
   });
 });
 adminRouter.use("/settings", settingsRouter);
+adminRouter.use(studioRouter);
 adminRouter.use(resourcesRouter);

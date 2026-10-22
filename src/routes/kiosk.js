@@ -1,6 +1,7 @@
 import { Router } from "express";
 import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
+import mongoose from "mongoose";
 import { z } from "zod";
 import { config } from "../config.js";
 import { Booking, Room, Package, KioskAttempt } from "../models/index.js";
@@ -46,6 +47,28 @@ async function registerInvalidCode(deviceKey) {
     return KioskAttempt.findOneAndUpdate({ deviceKey }, update, { new: true });
   }
 }
+
+// Máy chụp đang mở báo về mỗi phút (kể cả lúc chưa có khách): Quản lý máy hiện Online / Offline
+// và máy nhận chế độ lật ảnh quản trị đặt từ xa.
+kioskRouter.post("/ping", async (req, res) => {
+  const d = z.object({ device: z.string().max(2000) }).parse(req.body);
+  let device;
+  try {
+    device = jwt.verify(d.device, config.secret);
+  } catch {
+    fail(403, "Máy chụp chưa được gán phòng hoặc liên kết đã hết hạn.");
+  }
+  if (device.type !== "kiosk" || !mongoose.isObjectIdOrHexString(String(device.room)))
+    fail(403, "Thiết bị không hợp lệ.");
+  // Ghi thẳng collection: báo "còn mở" không làm mới bộ nhớ đệm danh mục.
+  const room = await Room.collection.findOneAndUpdate(
+    { _id: new mongoose.Types.ObjectId(String(device.room)), active: true },
+    { $set: { lastSeenAt: new Date() } },
+    { returnDocument: "after", projection: { name: 1, branch: 1, flip: 1 } },
+  );
+  if (!room) fail(403, "Phòng chụp đã ngừng hoạt động.");
+  res.json({ room: { _id: room._id, name: room.name, branch: room.branch, flip: room.flip || "device" } });
+});
 
 kioskRouter.post("/claim", sensitive(), async (req, res) => {
   const d = z
@@ -109,6 +132,7 @@ kioskRouter.post("/claim", sensitive(), async (req, res) => {
   }
   await KioskAttempt.deleteOne({ deviceKey });
   res.json({
+    flip: room.flip || "device",
     booking: publicBooking(b),
     accessToken: b.accessToken,
     captureToken: jwt.sign(

@@ -47,6 +47,9 @@ ticketsRouter.post("/draft", auth, bookingLimit, async (req, res) => {
   if (!branch) fail(400, "Vui lòng chọn chi nhánh trước khi tạo phiếu.");
   requireBranch(req, branch);
   if (room && d.branch && d.branch !== room.branch) fail(400, "Phòng không thuộc chi nhánh đã chọn.");
+  // Bảng giá riêng: gói chỉ bán ở các chi nhánh đã chọn (để trống = mọi chi nhánh).
+  if (pack.branches?.length && !pack.branches.includes(branch))
+    fail(400, `Gói “${pack.name}” không áp dụng tại chi nhánh ${branch}.`);
   if (d.expectedTotal !== undefined && d.expectedTotal !== pack.price)
     fail(409, "Giá gói vừa thay đổi. Vui lòng kiểm tra lại số tiền.");
   try {
@@ -190,6 +193,9 @@ ticketsRouter.post("/", auth, bookingLimit, async (req, res) => {
   if (!branch) fail(400, "Vui lòng chọn chi nhánh trước khi tạo mã.");
   requireBranch(req, branch);
   if (room && d.branch && d.branch !== room.branch) fail(400, "Phòng không thuộc chi nhánh đã chọn.");
+  // Bảng giá riêng: gói chỉ bán ở các chi nhánh đã chọn (để trống = mọi chi nhánh).
+  if (pack.branches?.length && !pack.branches.includes(branch))
+    fail(400, `Gói “${pack.name}” không áp dụng tại chi nhánh ${branch}.`);
   if (d.expectedTotal !== undefined && d.expectedTotal !== pack.price)
     fail(
       409,

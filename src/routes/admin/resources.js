@@ -2,7 +2,7 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { User, Room, Package, Frame, Sticker } from "../../models/index.js";
-import { admin, isAdmin, staffBranch } from "../../middleware/auth.js";
+import { admin, isAdmin, staffBranch, STAFF_PERMISSIONS } from "../../middleware/auth.js";
 import { fail, id, text, priceVND } from "../validation.js";
 import { moveFrame, withFrameCatalogLock } from "../../services/frame-order.js";
 import { frameListItem, hashImage, stickerListItem } from "../../services/frame-image.js";
@@ -42,6 +42,7 @@ const resources = {
       model: z.string().trim().max(100).default(""),
       importedAt: z.string().date().or(z.literal("")).nullable().default(null),
       expiresAt: z.string().date().or(z.literal("")).nullable().default(null),
+      flip: z.enum(["device", "on", "off"]).default("device"),
       active,
     }),
   ],
@@ -56,6 +57,11 @@ const resources = {
       countdownSeconds: z.number().int().min(1).max(30).default(10),
       printSize: z.enum(["full", "strip"]).default("full"),
       prints: z.number().int().min(0).max(20),
+      branches: z
+        .array(z.string().trim().min(1).max(200))
+        .max(50)
+        .default([])
+        .transform((items) => [...new Set(items)]),
       active,
     }),
   ],
@@ -114,6 +120,11 @@ const resources = {
       password: z.string().min(10).max(128).optional(),
       role: z.enum(["admin", "staff"]),
       branch: z.string().trim().max(200).default(""),
+      permissions: z
+        .array(z.enum(STAFF_PERMISSIONS))
+        .max(STAFF_PERMISSIONS.length)
+        .optional()
+        .transform((items) => items && [...new Set(items)]),
       active,
     }).refine((user) => user.role !== "staff" || Boolean(user.branch), {
       message: "Nhân viên cần được gán chi nhánh.", path: ["branch"],
@@ -151,6 +162,8 @@ for (const [route, [Model, schema]] of Object.entries(resources)) {
           "Không thể tự sửa tài khoản đang đăng nhập. Đổi mật khẩu ở mục “Đổi mật khẩu”; đổi tên / email nhờ quản trị viên khác.",
         );
       if (d.password) d.password = await bcrypt.hash(d.password, 12);
+      // Không gửi phân quyền thì giữ nguyên quyền đang lưu.
+      if (d.permissions === undefined) delete d.permissions;
     }
     // Phòng / gói đang dùng không được trùng tên (không phân biệt hoa thường): dễ nhầm ở quầy
     // và bảng phòng.

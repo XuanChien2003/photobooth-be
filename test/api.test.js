@@ -1074,6 +1074,8 @@ test("web app: favorites, bulk delete, upload, zip and multi-sheet print reach t
     .send({ images: [sheet, landscape], frameName: "Chấm bi", requestKey })
     .expect(201);
   assert.equal(job.body.sheetCount, 2);
+  // Chủ đề khách chọn ở lại trên đơn (xếp hạng chủ đề) sau khi lệnh in hết hạn.
+  assert.equal((await Booking.findById(b._id).lean()).frameName, "Chấm bi");
   const again = await request(app)
     .post(`/api/albums/${token}/print-pack`)
     .send({ images: [sheet, landscape], frameName: "Chấm bi", requestKey })
@@ -1828,7 +1830,7 @@ test("staff see order totals for collection but not revenue or monthly reports",
   const report = await desk.get("/api/admin/stats/revenue").expect(403);
   assert.equal(
     report.body.message,
-    "Chỉ quản trị viên được thực hiện thao tác này.",
+    "Tài khoản chưa được cấp quyền thực hiện thao tác này.",
   );
   await admin.get("/api/admin/stats/revenue").expect(200);
 

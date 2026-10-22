@@ -70,6 +70,8 @@ const bookingSchema = new Schema(
     ],
     video: { file: String, mimeType: String, size: Number },
     printed: { type: Boolean, default: false },
+    // Bộ khung / chủ đề khách chọn lần gửi in gần nhất (xếp hạng chủ đề ở Tổng quan; lệnh in tự xóa sau 24 giờ).
+    frameName: String,
     // prints: số tờ 10 × 15 cm được in (theo gói + mua thêm); printSheets: số tờ khách đã gửi in.
     printSheets: { type: Number, default: 0 },
     extraPrints: { type: Number, default: 0 },

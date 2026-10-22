@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { Booking, PrintJob } from "../../models/index.js";
-import { admin, requireBranch, staffBranch } from "../../middleware/auth.js";
+import { admin, allow, requireBranch, staffBranch } from "../../middleware/auth.js";
 import { deleteMedia, MEDIA_TTL_MS } from "../../services/media.js";
 import { printEvents } from "../../services/print-events.js";
 import { fail, id } from "../validation.js";
@@ -49,7 +49,7 @@ printsRouter.get("/", async (req, res) => {
     .lean();
   res.json(jobs.map((j) => publicJob(j, j.booking?.accessToken)));
 });
-printsRouter.patch("/:id", async (req, res) => {
+printsRouter.patch("/:id", allow("print:operate"), async (req, res) => {
   const d = z
     .object({ status: z.enum(["pending", "printed"]) })
     .parse(req.body);

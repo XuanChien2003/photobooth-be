@@ -350,6 +350,9 @@ export const openapi = {
           name: str("Tên phòng", { example: "Room 01" }),
           description: { type: "string", example: "" },
           branch: str("Chi nhánh", { example: "NXC" }),
+          machineCode: str("Mã máy"),
+          model: str("Dòng máy"),
+          flip: enumOf(["device", "on", "off"], "Chế độ lật ảnh: theo máy / luôn lật / không lật"),
           active: { type: "boolean", example: true },
         },
         ["name", "description", "branch", "active"],
@@ -364,6 +367,7 @@ export const openapi = {
           countdownSeconds: int("Giây đếm ngược trước mỗi ảnh (1–30)", { example: 10 }),
           printSize: enumOf(["full", "strip"]),
           prints: int("Số tờ in kèm gói (0–20)", { example: 1 }),
+          branches: { type: "array", items: { type: "string" }, description: "Chi nhánh áp dụng; để trống = mọi chi nhánh" },
           active: { type: "boolean", example: true },
         },
         ["name", "description", "price", "duration", "prints", "active"],
@@ -407,9 +411,27 @@ export const openapi = {
           email: { type: "string", format: "email", example: "mai@nxc.local" },
           password: str("Bắt buộc khi tạo mới (≥ 10 ký tự); bỏ trống khi sửa"),
           role: enumOf(["admin", "staff"]),
+          branch: str("Chi nhánh (bắt buộc với nhân viên)"),
+          permissions: {
+            type: "array",
+            description: "Quyền của nhân viên; bỏ trống để giữ quyền đang có.",
+            items: enumOf(["revenue:view", "orders:export", "orders:cancel", "print:operate", "shift:operate", "rooms:setup"]),
+          },
           active: { type: "boolean", example: true },
         },
         ["name", "email", "role", "active"],
+      ),
+      ScreenInput: object(
+        {
+          name: str("Tên cấu hình (cấu hình riêng)"),
+          rooms: { type: "array", items: objectId, description: "Máy áp dụng (cấu hình riêng)" },
+          title: str("Dòng chữ lớn"),
+          subtitle: str("Dòng chữ nhỏ"),
+          interval: int("Số giây mỗi ảnh (2–60)"),
+          images: { type: "array", items: { type: "object" }, description: "{ _id } giữ ảnh cũ hoặc { data } ảnh mới (≤ 6 ảnh)" },
+          active: bool("Đang dùng"),
+        },
+        ["images"],
       ),
       Settings: object(
         {
@@ -606,6 +628,22 @@ export const openapi = {
             },
           },
           ...errors(404),
+        },
+      },
+    },
+    "/api/screens/{id}/images/{imageId}": {
+      get: {
+        tags: ["Hệ thống"],
+        summary: "Ảnh màn hình chờ (công khai)",
+        description: "Có ?v=… (lấy từ /api/catalog) thì cache 1 năm.",
+        parameters: [
+          pathParam("id", "Mã màn hình chờ"),
+          pathParam("imageId", "Mã ảnh"),
+          query("v", "Phiên bản ảnh", { type: "string" }),
+        ],
+        responses: {
+          200: { description: "Ảnh", content: { "image/jpeg": { schema: { type: "string", format: "binary" } } } },
+          ...errors(400, 404),
         },
       },
     },
@@ -971,6 +1009,14 @@ export const openapi = {
         parameters: [pathParam("id", "ID lệnh in")],
         requestBody: body({ leaseId: uuid, sent: bool("Đã gửi thành công"), message: str("Lỗi nếu thất bại") }, ["leaseId", "sent"]),
         responses: { ...ok("Trạng thái spool"), ...errors(400, 403, 409) },
+      },
+    },
+    "/api/kiosk/ping": {
+      post: {
+        tags: ["Máy chụp (kiosk)"],
+        summary: "Máy chụp báo còn mở (mỗi phút), nhận tên phòng và chế độ lật ảnh",
+        requestBody: body({ device: str("Mã máy chụp của phòng") }, ["device"]),
+        responses: { ...ok("{ room: { _id, name, branch, flip } }"), ...errors(400, 403) },
       },
     },
     "/api/kiosk/claim": {
@@ -1505,6 +1551,139 @@ export const openapi = {
           note: str("Ghi chú"),
         }, ["closingCash"]),
         responses: { ...ok("Đã đóng ca"), ...errors(400, 401, 403, 404) },
+      },
+    },
+    "/api/admin/shifts/report": {
+      get: {
+        tags: ["Quầy & vé"],
+        summary: "Đối soát theo tháng: các ca đã đóng và tiền đã thu từng chi nhánh",
+        description: "Cần quyền xem doanh thu (quản trị hoặc nhân viên được cấp revenue:view, chỉ chi nhánh của mình).",
+        security: loggedIn,
+        parameters: [
+          query("month", "Tháng (mặc định tháng này)", month),
+          query("branch", "Chi nhánh (chỉ quản trị)", { type: "string" }),
+        ],
+        responses: { ...ok("Bảng đối soát"), ...errors(400, 401, 403) },
+      },
+    },
+    "/api/admin/stats/summary": {
+      get: {
+        tags: ["Quầy & vé"],
+        summary: "Tổng hợp: doanh thu thực nhận, số đơn so với kỳ trước, tiền mặt / chuyển khoản, xếp hạng chủ đề, gói, máy",
+        description: "Không có quyền xem doanh thu thì chỉ trả số lượt.",
+        security: loggedIn,
+        parameters: [
+          query("from", "Từ ngày (YYYY-MM-DD, mặc định hôm nay)", { type: "string", format: "date" }),
+          query("to", "Đến ngày (YYYY-MM-DD)", { type: "string", format: "date" }),
+          query("branch", "Chi nhánh (quản trị; lễ tân luôn là chi nhánh được phân công)", { type: "string" }),
+          query("room", "Tên máy / phòng", { type: "string" }),
+        ],
+        responses: { ...ok("Tổng hợp"), ...errors(400, 401, 403) },
+      },
+    },
+    "/api/admin/stats/chart": {
+      get: {
+        tags: ["Quầy & vé"],
+        summary: "Thống kê doanh thu: doanh thu & số đơn theo ngày (≤ 62 ngày) hoặc theo tháng, kèm kỳ so sánh",
+        description: "Cần quyền xem doanh thu.",
+        security: loggedIn,
+        parameters: [
+          query("from", "Từ ngày (YYYY-MM-DD, mặc định hôm nay)", { type: "string", format: "date" }),
+          query("to", "Đến ngày (YYYY-MM-DD)", { type: "string", format: "date" }),
+          query("branch", "Chi nhánh (quản trị; lễ tân luôn là chi nhánh được phân công)", { type: "string" }),
+          query("room", "Tên máy / phòng", { type: "string" }),
+        ],
+        responses: { ...ok("Chuỗi số liệu"), ...errors(400, 401, 403) },
+      },
+    },
+    "/api/admin/screens": {
+      get: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Màn hình chờ: cấu hình chung và cấu hình riêng từng máy",
+        description: adminOnly + " Lần đầu tự tạo cấu hình chung từ màn hình chờ cũ.",
+        security: loggedIn,
+        responses: { ...ok("Danh sách", { type: "array", items: { type: "object" } }), ...errors(401, 403) },
+      },
+      post: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Thêm cấu hình màn hình chờ riêng cho một số máy",
+        description: adminOnly,
+        security: loggedIn,
+        requestBody: { required: true, ...json(ref("ScreenInput")) },
+        responses: { ...ok("Danh sách sau khi lưu"), ...errors(400, 401, 403) },
+      },
+    },
+    "/api/admin/screens/{id}": {
+      parameters: [pathParam("id", "Mã màn hình chờ")],
+      put: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Sửa màn hình chờ (ảnh giữ lại gửi { _id }, ảnh mới gửi { data })",
+        description: adminOnly,
+        security: loggedIn,
+        requestBody: { required: true, ...json(ref("ScreenInput")) },
+        responses: { ...ok("Danh sách sau khi lưu"), ...errors(400, 401, 403, 404, 409) },
+      },
+      delete: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Xóa cấu hình riêng (không xóa được cấu hình chung)",
+        description: adminOnly,
+        security: loggedIn,
+        responses: { ...ok("Danh sách còn lại"), ...errors(400, 401, 403, 404, 409) },
+      },
+    },
+    "/api/admin/themes": {
+      get: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Chủ đề (bộ khung): số khung, số ô ảnh, trạng thái, thứ tự",
+        description: adminOnly,
+        security: loggedIn,
+        responses: { ...ok("Danh sách", { type: "array", items: { type: "object" } }), ...errors(401, 403) },
+      },
+      post: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Thêm chủ đề (chưa có khung)",
+        description: adminOnly,
+        security: loggedIn,
+        requestBody: body({ name: str("Tên chủ đề") }, ["name"]),
+        responses: { ...ok("Danh sách", { type: "array", items: { type: "object" } }, 201), ...errors(400, 401, 403, 409) },
+      },
+      put: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Đổi tên chủ đề (đổi luôn tên bộ của các khung) hoặc bật / tắt hiển thị với khách",
+        description: adminOnly,
+        security: loggedIn,
+        requestBody: body({ name: str("Tên hiện tại"), newName: str("Tên mới"), active: bool("Hiện cho khách") }, ["name"]),
+        responses: { ...ok("Danh sách"), ...errors(400, 401, 403, 404, 409) },
+      },
+    },
+    "/api/admin/themes/order": {
+      put: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Sắp xếp thứ tự chủ đề khách thấy",
+        description: adminOnly,
+        security: loggedIn,
+        requestBody: body({ names: { type: "array", items: { type: "string" } } }, ["names"]),
+        responses: { ...ok("Danh sách"), ...errors(400, 401, 403, 409) },
+      },
+    },
+    "/api/admin/themes/{name}": {
+      delete: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Xóa chủ đề (khung trong chủ đề thành khung lẻ, không bị xóa)",
+        description: adminOnly,
+        security: loggedIn,
+        parameters: [pathParam("name", "Tên chủ đề", { type: "string" })],
+        responses: { ...ok("Danh sách còn lại"), ...errors(400, 401, 403, 404) },
+      },
+    },
+    "/api/admin/settings/custom-filters": {
+      put: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Lưu các filter tiệm tự tạo (độ sáng, tương phản, bão hòa, sepia %, xoay màu độ)",
+        description: adminOnly,
+        security: loggedIn,
+        requestBody: body({ customFilters: { type: "array", items: { type: "object" } } }, ["customFilters"]),
+        responses: { ...ok("Cài đặt", ref("Settings")), ...errors(400, 401, 403) },
       },
     },
     "/api/admin/settings": {

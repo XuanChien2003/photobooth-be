@@ -6,7 +6,7 @@ export const quotaMessage = (quota, used) =>
     ? `Vé của bạn còn ${quota - used}/${quota} tờ in. Hãy bỏ bớt tờ, hoặc mua thêm tờ in tại quầy.`
     : `Vé đã dùng hết ${quota} tờ in. Muốn in thêm, bạn mua thêm tờ tại quầy nhé.`;
 // Giữ chỗ n tờ in trong một lệnh ghi duy nhất: 2 lần bấm "Gửi in" cùng lúc không vượt số tờ của vé.
-export const reserveSheets = (b, n) =>
+export const reserveSheets = (b, n, frameName = "") =>
   Booking.findOneAndUpdate(
     {
       _id: b._id,
@@ -17,7 +17,7 @@ export const reserveSheets = (b, n) =>
         ],
       },
     },
-    { $inc: { printSheets: n } },
+    { $inc: { printSheets: n }, ...(frameName && { $set: { frameName } }) },
     { new: true },
   );
 export const releaseSheets = (bookingId, n) =>
