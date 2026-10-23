@@ -5,14 +5,22 @@ import { User, Room, Package, Frame, Sticker } from "../../models/index.js";
 import { admin, isAdmin, staffBranch, STAFF_PERMISSIONS } from "../../middleware/auth.js";
 import { fail, id, text, priceVND } from "../validation.js";
 import { moveFrame, withFrameCatalogLock } from "../../services/frame-order.js";
-import { frameListItem, hashImage, stickerListItem } from "../../services/frame-image.js";
+import {
+  FRAME_LIST_FIELDS,
+  frameListItem,
+  hashImage,
+  makeFrameThumb,
+  makeStickerThumb,
+  STICKER_LIST_FIELDS,
+  stickerListItem,
+} from "../../services/frame-image.js";
 
 export const resourcesRouter = Router();
 
 // Danh sách khung không kèm ảnh base64 (mỗi lần tải lại cả trăm KB tới vài MB): chỉ trả địa chỉ
 // ảnh để cache; mở sửa khung thì lấy đủ ảnh của đúng khung đó ở đây.
 resourcesRouter.get("/frames/:id", admin, async (req, res) => {
-  const frame = await Frame.findById(id.parse(req.params.id));
+  const frame = await Frame.findById(id.parse(req.params.id)).select("-thumb");
   if (!frame) fail(404, "Không tìm thấy dữ liệu.");
   res.json(frame);
 });
@@ -76,9 +84,10 @@ const resources = {
       themeName: z.string().trim().max(100).default(""),
       order: z.number().int().min(0).max(999).default(0),
       printSize: z.enum(["full", "strip"]).default("full"),
+      // PNG tối đa 10 MB (≈ 13,4 triệu ký tự base64).
       image: z
         .string({ error: "Vui lòng import ảnh khung." })
-        .max(3_000_000, "Ảnh khung quá lớn.")
+        .max(14_000_000, "Ảnh khung quá lớn (tối đa 10 MB).")
         .regex(
           /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/,
           "Vui lòng import ảnh khung (PNG/JPG).",
@@ -90,13 +99,29 @@ const resources = {
             y: z.number().min(0).max(1),
             w: z.number().gt(0).max(1),
             h: z.number().gt(0).max(1),
+            kind: z.enum(["photo", "qr", "date"]).default("photo"),
+            photo: z.number().int().min(1).max(40).optional(),
           }),
         )
-        .min(
-          1,
-          "Không tìm thấy ô đặt ảnh (vùng trắng/trong suốt) trong ảnh khung.",
+        .max(60, "Mỗi khung hỗ trợ tối đa 60 vùng.")
+        .refine(
+          (slots) => slots.some((s) => s.kind === "photo"),
+          "Khung cần ít nhất 1 vùng ảnh.",
         )
-        .max(40, "Mỗi khung hỗ trợ tối đa 40 ô đặt ảnh."),
+        // Khung cũ không có số ảnh: vùng ảnh thứ n là ảnh số n.
+        .transform((slots) => {
+          let next = 0;
+          return slots.map((s) => s.kind === "photo"
+            ? { ...s, photo: s.photo ?? ++next }
+            : { x: s.x, y: s.y, w: s.w, h: s.h, kind: s.kind });
+        })
+        .refine(
+          (slots) => Math.max(...slots.map((s) => s.photo || 0)) <= 40,
+          "Mỗi khung hỗ trợ tối đa 40 ô ảnh.",
+        ),
+      sheet: z.boolean().default(false),
+      dateColor: z.string().regex(/^#[0-9a-f]{6}$/i, "Màu chữ ngày in không hợp lệ.").default("#2f1a12"),
+      shots: z.number().int().min(0).max(40).default(0),
       active,
     }),
   ],
@@ -145,9 +170,9 @@ for (const [route, [Model, schema]] of Object.entries(resources)) {
       ).sort({ createdAt: -1 });
       res.json(
         route === "frames"
-          ? (await query.select("-image").lean()).map(frameListItem)
+          ? (await query.select(FRAME_LIST_FIELDS).lean()).map(frameListItem)
           : route === "stickers"
-            ? (await query.select("-image").lean()).map(stickerListItem)
+            ? (await query.select(STICKER_LIST_FIELDS).lean()).map(stickerListItem)
             : await query,
       );
     },
@@ -187,6 +212,12 @@ for (const [route, [Model, schema]] of Object.entries(resources)) {
     }
     if (route === "frames" || route === "stickers") d.imageHash = hashImage(d.image);
     const changes = { $set: d };
+    if (route === "frames" || route === "stickers") {
+      // Ảnh xem nhanh tạo lại theo ảnh mới; lỗi thì để trống, lần đầu có người xem sẽ tạo.
+      const thumb = await (route === "frames" ? makeFrameThumb : makeStickerThumb)(d.image).catch(() => null);
+      if (thumb) d.thumb = thumb;
+      else changes.$unset = { thumb: 1 };
+    }
     if (route === "users" && d.password) changes.$inc = { sessionVersion: 1 };
     const write = () =>
       req.params.id
@@ -199,6 +230,7 @@ for (const [route, [Model, schema]] of Object.entries(resources)) {
     if (!result) fail(404, "Không tìm thấy dữ liệu.");
     const out = result.toObject();
     delete out.password;
+    delete out.thumb;
     res.json(out);
   };
   resourcesRouter.post(`/${route}`, admin, save);

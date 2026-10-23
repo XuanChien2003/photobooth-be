@@ -1,6 +1,6 @@
 import { Frame } from "../models/index.js";
 import { fail } from "../routes/validation.js";
-import { frameListItem } from "./frame-image.js";
+import { FRAME_LIST_FIELDS, frameListItem } from "./frame-image.js";
 
 // Serialize catalog writes in this process, including edits and deletions.
 let tail = Promise.resolve();
@@ -44,7 +44,7 @@ export async function moveFrame(frameId, direction, expectedIds) {
       },
     },
   ]);
-  return (await Frame.find().select("-image").sort({ createdAt: -1 }).lean()).map(
+  return (await Frame.find().select(FRAME_LIST_FIELDS).sort({ createdAt: -1 }).lean()).map(
     frameListItem,
   );
 }

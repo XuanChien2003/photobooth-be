@@ -2004,7 +2004,8 @@ test("admin can create, edit and deactivate every catalog resource; settings are
     .post("/api/admin/frames")
     .send(designed)
     .expect(200);
-  assert.deepEqual(frame.body.slots, designed.slots);
+  // Vùng ảnh cũ (chỉ có tọa độ) được đánh số ảnh 1, 2, 3… theo thứ tự.
+  assert.deepEqual(frame.body.slots, designed.slots.map((s, i) => ({ ...s, kind: "photo", photo: i + 1 })));
   await admin
     .post("/api/admin/frames")
     .send({ ...designed, slots: [] })

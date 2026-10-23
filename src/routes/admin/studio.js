@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { Frame, Room, Screen, Setting } from "../../models/index.js";
 import { admin } from "../../middleware/auth.js";
-import { hashImage, frameImageUrl } from "../../services/frame-image.js";
+import { hashImage, frameThumbUrl } from "../../services/frame-image.js";
 import { withFrameCatalogLock } from "../../services/frame-order.js";
 import { fail, id } from "../validation.js";
 
@@ -139,7 +139,29 @@ async function listThemes() {
           _id: "$theme",
           frames: { $sum: 1 },
           activeFrames: { $sum: { $cond: ["$active", 1, 0] } },
-          slots: { $sum: { $size: { $ifNull: ["$slots", []] } } },
+          // Số ảnh ghép: vùng ảnh khác số (bản sao cùng số, QR, ngày in không tính); khung cũ chưa
+          // đánh số thì mỗi ô là một ảnh.
+          slots: {
+            $sum: {
+              $size: {
+                $setUnion: [
+                  {
+                    $map: {
+                      input: {
+                        $filter: {
+                          input: { $ifNull: ["$slots", []] },
+                          as: "s",
+                          cond: { $eq: [{ $ifNull: ["$$s.kind", "photo"] }, "photo"] },
+                        },
+                      },
+                      as: "s",
+                      in: { $ifNull: ["$$s.photo", { x: "$$s.x", y: "$$s.y" }] },
+                    },
+                  },
+                ],
+              },
+            },
+          },
           sizes: { $addToSet: "$printSize" },
           createdAt: { $min: "$createdAt" },
           previews: {
@@ -164,7 +186,7 @@ async function listThemes() {
         slots: group?.slots || 0,
         sizes: group?.sizes || [],
         createdAt: group?.createdAt || meta?.createdAt || null,
-        previews: (group?.previews || []).slice(0, 4).map(frameImageUrl),
+        previews: (group?.previews || []).slice(0, 4).map(frameThumbUrl),
       };
     })
     .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name, "vi"));

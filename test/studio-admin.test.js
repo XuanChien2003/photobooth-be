@@ -330,3 +330,78 @@ test("guests can buy a session at the kiosk with cash; test mode skips payment w
   assert.equal(summary.revenue, 100000);
   await Booking.deleteMany({});
 });
+
+test("frames keep photo numbers, copied regions, QR and print-date regions", async () => {
+  const sheet = {
+    name: "Dải đôi", themeName: "Kawaii", printSize: "strip", sheet: true, dateColor: "#aa3366", shots: 6,
+    image: png, active: true,
+    slots: [
+      { x: 0.05, y: 0.05, w: 0.4, h: 0.25, kind: "photo", photo: 1 },
+      { x: 0.55, y: 0.05, w: 0.4, h: 0.25, kind: "photo", photo: 1 },
+      { x: 0.05, y: 0.35, w: 0.4, h: 0.25, kind: "photo", photo: 2 },
+      { x: 0.55, y: 0.35, w: 0.4, h: 0.25, kind: "photo", photo: 2 },
+      { x: 0.05, y: 0.9, w: 0.1, h: 0.07, kind: "qr", photo: 3 },
+      { x: 0.2, y: 0.92, w: 0.2, h: 0.04, kind: "date" },
+    ],
+  };
+  const saved = (await admin.post("/api/admin/frames").send(sheet).expect(200)).body;
+  assert.equal(saved.sheet, true);
+  assert.equal(saved.dateColor, "#aa3366");
+  assert.equal(saved.shots, 6);
+  assert.deepEqual(saved.slots.map((s) => [s.kind, s.photo]), [
+    ["photo", 1], ["photo", 1], ["photo", 2], ["photo", 2], ["qr", undefined], ["date", undefined],
+  ]);
+  const catalog = (await request(app).get("/api/catalog").expect(200)).body;
+  assert.equal(catalog.frames.find((f) => f._id === saved._id).slots.length, 6);
+  await admin.post("/api/admin/frames").send({ ...sheet, slots: [sheet.slots[4]] }).expect(400);
+  await admin.post("/api/admin/frames").send({ ...sheet, dateColor: "red" }).expect(400);
+  await Frame.deleteMany({});
+});
+
+test("frame lists carry a light WebP preview; the original stays untouched for printing", async () => {
+  const sharp = (await import("sharp")).default;
+  const hole = await sharp({ create: { width: 480, height: 440, channels: 4, background: "#000" } }).png().toBuffer();
+  const big = await sharp({ create: { width: 1200, height: 1800, channels: 4, background: { r: 231, g: 143, b: 168, alpha: 1 } } })
+    .composite([{ input: hole, left: 60, top: 100, blend: "dest-out" }])
+    .png()
+    .toBuffer();
+  const image = `data:image/png;base64,${big.toString("base64")}`;
+  const slots = [{ x: 0.05, y: 0.05, w: 0.4, h: 0.25 }];
+  const saved = (await admin.post("/api/admin/frames")
+    .send({ name: "Lớn", themeName: "Kawaii", printSize: "full", image, active: true, slots }).expect(200)).body;
+  assert.equal(saved.thumb, undefined, "không trả ảnh xem nhanh base64 về trang sửa");
+  const item = (await request(app).get("/api/catalog").expect(200)).body.frames.find((f) => f._id === saved._id);
+  assert.equal(item.thumb, `${item.image}&size=thumb`);
+  const thumb = await request(app).get(item.thumb).expect(200);
+  assert.equal(thumb.headers["content-type"], "image/webp");
+  assert.match(thumb.headers["cache-control"], /immutable/);
+  const meta = await sharp(thumb.body).metadata();
+  assert.deepEqual([meta.width, meta.height, meta.hasAlpha], [480, 720, true]);
+  assert.ok(thumb.body.length < big.length, `${thumb.body.length} < ${big.length}`);
+  assert.deepEqual((await request(app).get(item.image).expect(200)).body, big, "ảnh gốc để ghép / in giữ nguyên");
+  // Khung cũ chưa có ảnh xem nhanh: tạo khi có người xem lần đầu rồi lưu lại.
+  await Frame.collection.updateOne({ _id: new mongoose.Types.ObjectId(saved._id) }, { $unset: { thumb: 1 } });
+  assert.equal((await request(app).get(item.thumb).expect(200)).headers["content-type"], "image/webp");
+  assert.match((await Frame.findById(saved._id).select("thumb").lean()).thumb, /^data:image\/webp;base64,/);
+  // Ảnh không đọc được: vẫn trả ảnh gốc.
+  const broken = (await admin.post("/api/admin/frames")
+    .send({ name: "Hỏng", image: png, active: true, slots }).expect(200)).body;
+  const brokenItem = (await admin.get("/api/admin/frames").expect(200)).body.find((f) => f._id === broken._id);
+  assert.equal((await request(app).get(brokenItem.thumb).expect(200)).headers["content-type"], "image/png");
+  const themes = (await admin.get("/api/admin/themes").expect(200)).body;
+  assert.ok(themes.find((t) => t.name === "Kawaii").previews.every((u) => u.endsWith("&size=thumb")));
+  await Frame.deleteMany({});
+  // Nhãn dán: bảng chọn dùng ảnh 200 px, dán lên khung dùng ảnh gốc.
+  const star = await sharp({ create: { width: 512, height: 512, channels: 4, background: { r: 240, g: 190, b: 60, alpha: 0.9 } } }).png().toBuffer();
+  const sticker = (await admin.post("/api/admin/stickers")
+    .send({ name: "Sao", image: `data:image/png;base64,${star.toString("base64")}`, active: true }).expect(200)).body;
+  assert.equal(sticker.thumb, undefined);
+  const listed = (await request(app).get("/api/catalog").expect(200)).body.stickers.find((s) => s._id === sticker._id);
+  assert.equal(listed.thumb, `${listed.image}&size=thumb`);
+  const small = await request(app).get(listed.thumb).expect(200);
+  assert.equal(small.headers["content-type"], "image/webp");
+  assert.deepEqual([(await sharp(small.body).metadata()).width, (await sharp(small.body).metadata()).hasAlpha], [200, true]);
+  assert.deepEqual((await request(app).get(listed.image).expect(200)).body, star);
+  assert.ok(!JSON.stringify((await admin.get("/api/admin/stickers").expect(200)).body).includes("base64"));
+  await admin.delete(`/api/admin/stickers/${sticker._id}`).expect(200);
+});

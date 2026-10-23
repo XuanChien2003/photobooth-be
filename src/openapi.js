@@ -124,7 +124,7 @@ const resourcePaths = Object.fromEntries(
               ? "Lễ tân (staff) xem phòng đang hoạt động để mở kiosk; quản trị xem tất cả phòng, gồm phòng đã tắt. Cần đăng nhập."
               : route === "frames"
                 ? adminOnly +
-                  " Danh sách không kèm ảnh base64: image là địa chỉ ảnh (/api/frames/{id}/image?v=…) để cache; lấy đủ ảnh của một khung bằng GET /api/admin/frames/{id}."
+                  " Danh sách không kèm ảnh base64: image là địa chỉ ảnh (/api/frames/{id}/image?v=…) để cache, thumb là ảnh xem nhanh (…&size=thumb); lấy đủ ảnh của một khung bằng GET /api/admin/frames/{id}."
                 : adminOnly,
           security: loggedIn,
           responses: {
@@ -618,10 +618,13 @@ export const openapi = {
         tags: ["Hệ thống"],
         summary: "Ảnh khung đang hoạt động (PNG/JPG/WebP, công khai)",
         description:
-          "Có ?v=… (lấy từ /api/catalog) thì cache 1 năm; đổi ảnh khung thì v đổi nên tự tải lại.",
+          "Có ?v=… (lấy từ /api/catalog) thì cache 1 năm; đổi ảnh khung thì v đổi nên tự tải lại. " +
+          "?size=thumb trả ảnh xem nhanh WebP cạnh dài 720 px (frames[].thumb) cho bộ chọn chủ đề / danh sách; " +
+          "khung cũ chưa có thì tạo một lần, ảnh không đọc được thì trả ảnh gốc. Ghép ảnh và in luôn dùng ảnh gốc.",
         parameters: [
           pathParam("id", "Mã khung"),
           query("v", "Phiên bản ảnh (từ /api/catalog)", { type: "string" }),
+          query("size", "thumb: ảnh xem nhanh WebP", { type: "string", enum: ["thumb"] }),
         ],
         responses: {
           200: {

@@ -6,6 +6,8 @@ const stickerSchema = new mongoose.Schema(
   {
     name: String,
     image: String,
+    // Ảnh xem nhanh (WebP 200 px) cho bảng chọn nhãn dán; dán lên khung vẫn dùng `image`.
+    thumb: String,
     // Mã nội dung ảnh, dùng làm ?v= để trình duyệt giữ ảnh đã tải.
     imageHash: String,
     order: { type: Number, default: 0 },
