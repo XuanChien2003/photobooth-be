@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import express from "express";
 import jwt from "jsonwebtoken";
 import mongoose from "mongoose";
+import sharp from "sharp";
 import { z } from "zod";
 import { config } from "../config.js";
 import { Booking, Room, Package, KioskAttempt } from "../models/index.js";
@@ -325,6 +326,46 @@ kioskRouter.post("/video", videoBody, async (req, res) => {
   ).select("video");
   if (old?.video?.file && old.video.file !== file) await deleteMedia([old.video.file]).catch(() => {});
   res.status(201).json({ ok: true, size: req.body.length });
+});
+// Ảnh đã ghép khung của lượt chụp (máy chụp ghép bản chất lượng in sau khi khách chọn khung): gửi
+// một lần, gửi lại thì thay ảnh cũ. Kèm bản xem nhanh 720 px cho album.
+const compositeBody = express.raw({ type: ["image/jpeg"], limit: "20mb" });
+kioskRouter.post("/composite", compositeBody, async (req, res) => {
+  if (!Buffer.isBuffer(req.body) || !req.body.length) fail(400, "Ảnh ghép trống.");
+  const { b } = await captureBooking(z.string().parse(req.get("X-Capture-Token")));
+  let frameName = "";
+  try {
+    frameName = decodeURIComponent(req.get("X-Frame-Name") || "").trim().slice(0, 200);
+  } catch {
+    frameName = "";
+  }
+  const meta = await sharp(req.body, { limitInputPixels: 40_000_000 }).metadata().catch(() => null);
+  if (meta?.format !== "jpeg" || !meta.width || !meta.height || Math.max(meta.width, meta.height) > 6000)
+    fail(400, "Ảnh ghép phải là JPEG (tối đa 6000 px).");
+  const thumbnail = await sharp(req.body)
+    .resize({ width: 720, height: 720, fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality: 84, mozjpeg: true })
+    .toBuffer();
+  const name = crypto.randomUUID();
+  const file = mediaReference(`${name}.jpg`);
+  const thumbnailFile = mediaReference(`${name}.thumb.jpg`);
+  await Promise.all([
+    saveMedia(file, req.body, "image/jpeg"),
+    saveMedia(thumbnailFile, thumbnail, "image/jpeg"),
+  ]);
+  const old = await Booking.findOneAndUpdate(
+    { _id: b._id },
+    {
+      $set: {
+        composite: { file, thumbnailFile, frameName, width: meta.width, height: meta.height },
+        // Xếp hạng chủ đề ở Tổng quan tính cả lượt không in.
+        ...(frameName && { frameName }),
+      },
+    },
+  ).select("composite");
+  const stale = [old?.composite?.file, old?.composite?.thumbnailFile].filter((f) => f && f !== file && f !== thumbnailFile);
+  if (stale.length) await deleteMedia(stale).catch(() => {});
+  res.status(201).json({ ok: true, width: meta.width, height: meta.height });
 });
 kioskRouter.post("/finish", async (req, res) => {
   const { b } = await captureBooking(z.string().parse(req.body.captureToken));

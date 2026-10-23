@@ -29,6 +29,10 @@ export const publicBooking = (b) => ({
     })),
   // Video tua nhanh máy chụp quay trong lúc chụp (tải ở /albums/:token/video).
   video: b.video?.file ? { mimeType: b.video.mimeType, size: b.video.size } : undefined,
+  // Ảnh đã ghép khung ở máy chụp (tải ở /albums/:token/composite).
+  composite: b.composite?.file
+    ? { frameName: b.composite.frameName || "", width: b.composite.width, height: b.composite.height }
+    : undefined,
 });
 // Album page responses also carry each photo's storage links (see photoLinks): the gallery
 // and editor load straight from R2 instead of one server round trip per image.

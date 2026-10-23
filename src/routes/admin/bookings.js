@@ -43,7 +43,8 @@ bookingsRouter.get("/bookings", async (req, res) => {
     .limit(500)
     .lean();
   const ids = list.map((booking) => booking._id);
-  // Ảnh đại diện của đơn: ảnh đã ghép khung (lệnh in gần nhất), chưa có thì tấm đầu tiên còn hạn.
+  // Ảnh đại diện của đơn: ảnh đã ghép khung (ảnh máy chụp ghép, rồi tới lệnh in gần nhất), chưa có
+  // thì tấm đầu tiên còn hạn.
   // Hai truy vấn chạy song song nên danh sách không chậm thêm một lượt đi về.
   const [jobs, covers] = list.length
     ? await Promise.all([
@@ -79,12 +80,18 @@ bookingsRouter.get("/bookings", async (req, res) => {
       const job = latest.get(String(booking._id));
       const visible = hideMoney(req, booking);
       const photo = cover.get(String(booking._id));
+      const composite = booking.composite?.file && !booking.mediaDeleted && booking.accessToken
+        ? `/api/albums/${booking.accessToken}/composite`
+        : null;
       return {
         ...visible,
         latestPrint: job ? publicJob(job, booking.accessToken) : null,
-        coverPhoto: photo && booking.accessToken
-          ? `/api/albums/${booking.accessToken}/photos/${photo}?size=thumbnail`
-          : null,
+        composite: composite ? { url: composite, frameName: booking.composite.frameName || "" } : null,
+        coverPhoto: composite
+          ? `${composite}?size=thumbnail`
+          : photo && booking.accessToken
+            ? `/api/albums/${booking.accessToken}/photos/${photo}?size=thumbnail`
+            : null,
       };
     }),
   );

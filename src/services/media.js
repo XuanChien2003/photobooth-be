@@ -242,15 +242,19 @@ export async function purgeExpiredMedia(now = new Date()) {
   const candidates = await Booking.find({
     $or: [
       { "photos._id": { $lt: before } },
-      // Dữ liệu cũ còn video (máy chụp không quay video nữa).
+      // Album đã hết ảnh nhưng còn video / ảnh ghép khung.
       { "video.file": { $exists: true }, mediaExpiresAt: { $lte: now } },
+      { "composite.file": { $exists: true }, mediaExpiresAt: { $lte: now } },
     ],
   });
   let changed = 0;
   for (const b of candidates) {
     const old = b.photos.filter((p) => photoTime(p) <= cutoff.getTime());
     const keep = b.photos.filter((p) => photoTime(p) > cutoff.getTime());
-    const video = b.video?.file && !keep.length ? [b.video.file] : [];
+    // Video và ảnh ghép khung xóa cùng ảnh cuối cùng của album.
+    const video = keep.length
+      ? []
+      : [b.video?.file, b.composite?.file, b.composite?.thumbnailFile].filter(Boolean);
     if (!old.length && !video.length) continue;
     changed++;
     await deleteMedia([
@@ -270,7 +274,7 @@ export async function purgeExpiredMedia(now = new Date()) {
     // Hết sạch ảnh: album báo "Ảnh đã hết hạn lưu trữ".
     await Booking.updateOne(
       { _id: b._id, photos: { $size: 0 } },
-      { $set: { mediaDeleted: true }, $unset: { video: 1 } },
+      { $set: { mediaDeleted: true }, $unset: { video: 1, composite: 1 } },
     );
   }
   // Mỗi lệnh in lưu 24 giờ kể từ lúc khách gửi (đã in hay chưa), rồi xóa cùng file tờ in.

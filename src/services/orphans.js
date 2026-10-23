@@ -6,8 +6,12 @@ import { r2Configured, readR2Inventory } from "./r2.js";
 // Every file name some booking photo or print job still refers to.
 async function referencedMedia() {
   const [bookings, jobs] = await Promise.all([
-    Booking.find({ $or: [{ "photos.0": { $exists: true } }, { "video.file": { $exists: true } }] })
-      .select("photos.file photos.originalFile photos.thumbnailFile photos.previewFile photos.printFile video.file")
+    Booking.find({ $or: [
+      { "photos.0": { $exists: true } },
+      { "video.file": { $exists: true } },
+      { "composite.file": { $exists: true } },
+    ] })
+      .select("photos.file photos.originalFile photos.thumbnailFile photos.previewFile photos.printFile video.file composite.file composite.thumbnailFile")
       .lean(),
     PrintJob.find().select("file sheets.file").lean(),
   ]);
@@ -16,6 +20,7 @@ async function referencedMedia() {
     for (const p of b.photos || [])
       for (const f of [p.file, p.originalFile, p.thumbnailFile, p.previewFile, p.printFile]) if (f) names.add(f);
     if (b.video?.file) names.add(b.video.file);
+    for (const f of [b.composite?.file, b.composite?.thumbnailFile]) if (f) names.add(f);
   }
   for (const j of jobs) for (const f of [j.file, ...(j.sheets || []).map((s) => s.file)]) if (f) names.add(f);
   return names;

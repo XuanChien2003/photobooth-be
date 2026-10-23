@@ -648,6 +648,21 @@ export const openapi = {
         },
       },
     },
+    "/api/albums/{token}/composite": {
+      get: {
+        tags: ["Album khách"],
+        summary: "Ảnh đã ghép khung ở máy chụp (?size=thumbnail bản xem nhanh 720 px; ?download=1 để tải về)",
+        parameters: [
+          tokenParam,
+          query("size", "thumbnail: bản xem nhanh", { type: "string", enum: ["thumbnail"] }),
+          query("download", "1 = tải về máy", { type: "string" }),
+        ],
+        responses: {
+          200: { description: "Ảnh JPEG", content: { "image/jpeg": { schema: { type: "string", format: "binary" } } } },
+          ...errors(404),
+        },
+      },
+    },
     "/api/screens/{id}/images/{imageId}": {
       get: {
         tags: ["Hệ thống"],
@@ -1058,6 +1073,22 @@ export const openapi = {
           },
         },
         responses: { ...ok("Đã lưu", { type: "object" }, 201), ...errors(400, 401, 403, 409, 413) },
+      },
+    },
+    "/api/kiosk/composite": {
+      post: {
+        tags: ["Máy chụp (kiosk)"],
+        summary: "Gửi ảnh đã ghép khung của lượt chụp vào album (thay ảnh cũ nếu gửi lại)",
+        description:
+          "Thân là ảnh image/jpeg (≤ 20 MB, cạnh dài ≤ 6000 px) — bản chất lượng in máy chụp ghép sau khi khách chọn khung; " +
+          "khách xem / tải ở /api/albums/{token}/composite kể cả khi gói không kèm tờ in. Header X-Capture-Token là mã phiên " +
+          "chụp, X-Frame-Name (tùy chọn, encodeURIComponent) là tên chủ đề / khung (tính vào xếp hạng chủ đề).",
+        parameters: [
+          { name: "X-Capture-Token", in: "header", required: true, schema: { type: "string" } },
+          { name: "X-Frame-Name", in: "header", required: false, schema: { type: "string" } },
+        ],
+        requestBody: { required: true, content: { "image/jpeg": { schema: { type: "string", format: "binary" } } } },
+        responses: { ...ok("{ ok, width, height }", { type: "object" }, 201), ...errors(400, 401, 403, 409, 413) },
       },
     },
     "/api/kiosk/ping": {

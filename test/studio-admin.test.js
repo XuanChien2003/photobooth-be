@@ -405,3 +405,54 @@ test("frame lists carry a light WebP preview; the original stays untouched for p
   assert.ok(!JSON.stringify((await admin.get("/api/admin/stickers").expect(200)).body).includes("base64"));
   await admin.delete(`/api/admin/stickers/${sticker._id}`).expect(200);
 });
+
+test("the kiosk saves the framed photo into the album even without prints; it expires with the album", async () => {
+  const sharp = (await import("sharp")).default;
+  const { purgeExpiredMedia, readMedia } = await import("../src/services/media.js");
+  const sessionId = "session-composite-test";
+  const accessToken = "k".repeat(48);
+  const old = new mongoose.Types.ObjectId(Math.floor((Date.now() - 30 * 3600_000) / 1000));
+  const booking = await Booking.create({
+    branch: "Bắc Giang", code: "616161", status: "completed", paid: true, accessToken, prints: 0,
+    captureSession: sessionId, captureStartedAt: new Date(), captureEndsAt: new Date(Date.now() - 1000),
+    photos: [{ _id: new mongoose.Types.ObjectId(), file: "c1.jpg", thumbnailFile: "c1.jpg", kind: "original" }],
+  });
+  const captureToken = jwt.sign({ type: "capture", booking: String(booking._id), sessionId }, config.secret);
+  await request(app).get(`/api/albums/${accessToken}/composite`).expect(404);
+  const framed = await sharp({ create: { width: 1200, height: 1800, channels: 3, background: "#e78fa8" } }).jpeg({ quality: 92 }).toBuffer();
+  const send = (body, token = captureToken, type = "image/jpeg") => request(app).post("/api/kiosk/composite")
+    .set("X-Capture-Token", token).set("X-Frame-Name", encodeURIComponent("Mộng mơ")).set("Content-Type", type).send(body);
+  await send(framed, "bad").expect(401);
+  await send(Buffer.from("not a jpeg")).expect(400);
+  await send(framed).expect(201);
+  const first = (await Booking.findById(booking._id).lean()).composite;
+  // Gửi lại (máy chụp thử lại sau khi mất mạng) thay ảnh cũ, xóa file cũ.
+  await send(framed).expect(201);
+  const saved = await Booking.findById(booking._id).lean();
+  assert.notEqual(saved.composite.file, first.file);
+  assert.equal(await readMedia(first.file), null);
+  assert.equal(saved.frameName, "Mộng mơ", "xếp hạng chủ đề tính cả lượt không in");
+  const album = (await request(app).get(`/api/albums/${accessToken}`).expect(200)).body;
+  assert.deepEqual(album.composite, { frameName: "Mộng mơ", width: 1200, height: 1800 });
+  assert.ok(!JSON.stringify(album).includes(saved.composite.file), "không lộ tên file");
+  const full = await request(app).get(`/api/albums/${accessToken}/composite?download=1`).expect(200);
+  assert.deepEqual(full.body, framed);
+  assert.match(full.headers["content-disposition"], /NXC-616161-anh-ghep\.jpg/);
+  const thumb = await request(app).get(`/api/albums/${accessToken}/composite?size=thumbnail`).expect(200);
+  assert.deepEqual([(await sharp(thumb.body).metadata()).width, (await sharp(thumb.body).metadata()).height], [480, 720]);
+  // Danh sách đơn: ảnh đại diện là ảnh ghép, có link tải.
+  const orders = (await admin.get(`/api/admin/bookings?code=616161`).expect(200)).body;
+  const order = (Array.isArray(orders) ? orders : orders.items || []).find((o) => o.code === "616161");
+  assert.deepEqual(order.composite, { url: `/api/albums/${accessToken}/composite`, frameName: "Mộng mơ" });
+  assert.equal(order.coverPhoto, `/api/albums/${accessToken}/composite?size=thumbnail`);
+  // Ảnh cuối cùng của album hết hạn: ảnh ghép xóa theo.
+  await Booking.updateOne({ _id: booking._id }, { $set: { photos: [{ _id: old, file: "c1.jpg", kind: "original" }], mediaExpiresAt: new Date(Date.now() - 1000) } });
+  await purgeExpiredMedia();
+  const after = await Booking.findById(booking._id).lean();
+  assert.equal(after.composite, undefined);
+  assert.equal(after.mediaDeleted, true);
+  assert.equal(await readMedia(saved.composite.file), null);
+  assert.equal(await readMedia(saved.composite.thumbnailFile), null);
+  await request(app).get(`/api/albums/${accessToken}/composite`).expect(404);
+  await Booking.deleteMany({});
+});
