@@ -261,11 +261,12 @@ bookingsRouter.post("/bookings/:id/reprint", allow("print:operate"), async (req,
   res.status(201).json(output);
 });
 // Bảng phòng cho lễ tân: phòng nào trống, phòng nào đang chụp và còn bao lâu.
+const MACHINE_LIVE_MS = 3 * 60 * 1000;
 bookingsRouter.get("/rooms/live", async (req, res) => {
   const now = Date.now();
   const assigned = staffBranch(req);
   const [rooms, sessions] = await Promise.all([
-    Room.find({ active: true, ...(assigned && { branch: assigned }) }).sort({ name: 1 }).select("name branch").lean(),
+    Room.find({ active: true, ...(assigned && { branch: assigned }) }).sort({ name: 1 }).select("name branch lastSeenAt").lean(),
     Booking.find({
       status: "checked_in",
       ...(assigned && { branch: assigned }),
@@ -278,7 +279,7 @@ bookingsRouter.get("/rooms/live", async (req, res) => {
         },
       ],
     })
-      .select("code name room captureEndsAt captureSeenAt")
+      .select("code name room captureStartedAt captureEndsAt captureSeenAt")
       .lean(),
   ]);
   res.json({
@@ -292,11 +293,14 @@ bookingsRouter.get("/rooms/live", async (req, res) => {
         status: !s ? "free" : s.captureEndsAt ? "shooting" : "starting",
         code: s?.code,
         customer: s?.name,
+        startedAt: s?.captureStartedAt,
         endsAt: s?.captureEndsAt,
         online: Boolean(
           s?.captureSeenAt &&
           now - new Date(s.captureSeenAt).getTime() < KIOSK_LIVE_MS,
         ),
+        // Máy chụp của phòng đang mở (báo còn sống mỗi phút) — lễ tân biết phòng nào dùng được.
+        machine: Boolean(room.lastSeenAt && now - new Date(room.lastSeenAt).getTime() < MACHINE_LIVE_MS),
       };
     }),
   });

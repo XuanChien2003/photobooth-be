@@ -1668,6 +1668,7 @@ test("front desk: tickets need no room and the room board shows live sessions", 
   assert.equal(testRoom.status, "shooting");
   assert.equal(testRoom.code, b.code);
   assert.equal(testRoom.online, true);
+  assert.ok(new Date(testRoom.startedAt) < new Date(testRoom.endsAt), "thanh thời gian cần lúc bắt đầu");
   await request(app)
     .post("/api/kiosk/finish")
     .send({ captureToken: session.captureToken })
@@ -1677,6 +1678,13 @@ test("front desk: tickets need no room and the room board shows live sessions", 
     free.body.rooms.find((r) => r.name === "Test room").status,
     "free",
   );
+  // Máy chụp của phòng báo còn mở trong 3 phút gần đây.
+  const machineOf = async () =>
+    (await staff.get("/api/admin/rooms/live").expect(200)).body.rooms.find((r) => r.name === "Test room").machine;
+  await Room.updateOne({ name: "Test room" }, { $set: { lastSeenAt: new Date() } });
+  assert.equal(await machineOf(), true);
+  await Room.updateOne({ name: "Test room" }, { $set: { lastSeenAt: new Date(Date.now() - 10 * 60000) } });
+  assert.equal(await machineOf(), false);
   await request(app).get("/api/admin/rooms/live").expect(401);
   await Booking.deleteMany({ _id: { $in: [anyRoom._id, b._id] } });
 });
