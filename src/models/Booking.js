@@ -15,7 +15,11 @@ const bookingSchema = new Schema(
     prints: Number,
     date: String,
     time: String,
-    source: { type: String, enum: ["counter", "scheduled"] },
+    // kiosk: khách tự chọn gói và trả tiền ngay tại máy chụp.
+    source: { type: String, enum: ["counter", "scheduled", "kiosk"] },
+    // Tiền máy nhận tiền đã nhận (có thể dư so với giá gói) và từng tờ tiền.
+    cashReceived: Number,
+    cashBills: [{ _id: false, amount: Number, at: Date }],
     issuedBy: { type: Schema.Types.ObjectId, ref: "User" },
     total: Number,
     discount: Number,
@@ -40,6 +44,7 @@ const bookingSchema = new Schema(
     // Snapshot at sale: later package edits must not change a paid ticket's time.
     captureDuration: Number,
     countdownSeconds: Number,
+    selectCount: Number,
     printSize: { type: String, enum: ["full", "strip"] },
     // Máy chụp báo "còn sống" vài giây một lần; máy khác chỉ nhận lại mã khi máy cũ im lặng.
     captureSeenAt: Date,

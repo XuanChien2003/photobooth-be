@@ -353,6 +353,8 @@ export const openapi = {
           machineCode: str("Mã máy"),
           model: str("Dòng máy"),
           flip: enumOf(["device", "on", "off"], "Chế độ lật ảnh: theo máy / luôn lật / không lật"),
+          payment: enumOf(["counter", "cash"], "Trả tiền: mua mã ở quầy / đút tiền tại máy"),
+          paymentTest: bool("Chế độ thử: có nút bỏ qua trả tiền"),
           active: { type: "boolean", example: true },
         },
         ["name", "description", "branch", "active"],
@@ -365,6 +367,7 @@ export const openapi = {
           duration: int("Thời gian chụp (phút, 1–30)", { example: 5 }),
           shots: int("Số ảnh bắt buộc chụp (1–40)", { example: 12 }),
           countdownSeconds: int("Giây đếm ngược trước mỗi ảnh (1–30)", { example: 10 }),
+          selectCount: int("Số ảnh khách chọn để ghép khung trên máy chụp (1–12)", { example: 4 }),
           printSize: enumOf(["full", "strip"]),
           prints: int("Số tờ in kèm gói (0–20)", { example: 1 }),
           branches: { type: "array", items: { type: "string" }, description: "Chi nhánh áp dụng; để trống = mọi chi nhánh" },
@@ -627,6 +630,17 @@ export const openapi = {
               "image/png": { schema: { type: "string", format: "binary" } },
             },
           },
+          ...errors(404),
+        },
+      },
+    },
+    "/api/albums/{token}/video": {
+      get: {
+        tags: ["Album khách"],
+        summary: "Video tua nhanh của lượt chụp (hỗ trợ Range; ?download=1 để tải về)",
+        parameters: [tokenParam, query("download", "1 = tải về máy", { type: "string" })],
+        responses: {
+          200: { description: "Video", content: { "video/mp4": { schema: { type: "string", format: "binary" } } } },
           ...errors(404),
         },
       },
@@ -1009,6 +1023,38 @@ export const openapi = {
         parameters: [pathParam("id", "ID lệnh in")],
         requestBody: body({ leaseId: uuid, sent: bool("Đã gửi thành công"), message: str("Lỗi nếu thất bại") }, ["leaseId", "sent"]),
         responses: { ...ok("Trạng thái spool"), ...errors(400, 403, 409) },
+      },
+    },
+    "/api/kiosk/sale": {
+      post: {
+        tags: ["Máy chụp (kiosk)"],
+        summary: "Khách mua lượt chụp ngay tại máy (đút tiền) hoặc bỏ qua trả tiền ở chế độ thử",
+        description: "Phòng phải bật Thanh toán tại máy (payment = cash) hoặc Chế độ thử (paymentTest, skip = true). " +
+          "bills: các tờ tiền máy nhận tiền đã nhận; tổng phải ≥ giá gói. Gửi lại cùng requestKey trả đúng lượt chụp đã tạo.",
+        requestBody: body({
+          device: str("Mã máy chụp của phòng"),
+          package: str("ID gói chụp"),
+          requestKey: uuid,
+          skip: bool("Bỏ qua trả tiền (chế độ thử, không tính doanh thu)"),
+          bills: { type: "array", items: object({ amount: int("Mệnh giá (VND)"), at: str("Thời điểm nhận (ISO)") }, ["amount"]) },
+        }, ["device", "package", "requestKey"]),
+        responses: { ...ok("Lượt chụp đã mở: { booking, accessToken, captureToken, flip }", { type: "object" }, 201), ...errors(400, 403, 409, 429) },
+      },
+    },
+    "/api/kiosk/video": {
+      post: {
+        tags: ["Máy chụp (kiosk)"],
+        summary: "Gửi video tua nhanh của lượt chụp (thay video cũ nếu gửi lại)",
+        description: "Thân là tệp video/webm hoặc video/mp4 (≤ 60 MB); header X-Capture-Token là mã phiên chụp.",
+        parameters: [{ name: "X-Capture-Token", in: "header", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: true,
+          content: {
+            "video/webm": { schema: { type: "string", format: "binary" } },
+            "video/mp4": { schema: { type: "string", format: "binary" } },
+          },
+        },
+        responses: { ...ok("Đã lưu", { type: "object" }, 201), ...errors(400, 401, 403, 409, 413) },
       },
     },
     "/api/kiosk/ping": {

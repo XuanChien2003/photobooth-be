@@ -1,5 +1,6 @@
 import { Booking } from "../models/index.js";
 import { MEDIA_TTL_MS } from "../services/media.js";
+import { printExtension } from "../services/print-image.js";
 
 export const quotaMessage = (quota, used) =>
   used < quota
@@ -39,6 +40,8 @@ export const publicJob = (job, accessToken) => ({
   copies: job.copies,
   frameName: job.frameName,
   sheetCount: job.sheets?.length || 1,
+  // Định dạng tờ in (png / jpg): nút "Tải ảnh final" ghi đúng loại tệp.
+  format: printExtension(job.sheets?.[0]?.file || job.file || ""),
   spoolStatus: job.spoolStatus,
   spoolMessage: job.spoolMessage,
   width: job.width,

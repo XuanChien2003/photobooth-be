@@ -27,7 +27,8 @@ export const publicBooking = (b) => ({
       // Có nguồn in 3000 px riêng (ảnh mới); ảnh cũ in từ ảnh gốc.
       printSource: Boolean(p.printFile),
     })),
-  video: undefined, // máy chụp không quay video nữa (dữ liệu cũ vẫn được dọn khi hết hạn)
+  // Video tua nhanh máy chụp quay trong lúc chụp (tải ở /albums/:token/video).
+  video: b.video?.file ? { mimeType: b.video.mimeType, size: b.video.size } : undefined,
 });
 // Album page responses also carry each photo's storage links (see photoLinks): the gallery
 // and editor load straight from R2 instead of one server round trip per image.

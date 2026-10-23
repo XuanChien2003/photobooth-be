@@ -43,6 +43,8 @@ const resources = {
       importedAt: z.string().date().or(z.literal("")).nullable().default(null),
       expiresAt: z.string().date().or(z.literal("")).nullable().default(null),
       flip: z.enum(["device", "on", "off"]).default("device"),
+      payment: z.enum(["counter", "cash"]).default("counter"),
+      paymentTest: z.boolean().default(false),
       active,
     }),
   ],
@@ -55,6 +57,7 @@ const resources = {
       duration: z.number().int().min(1).max(30),
       shots: z.number().int().min(1).max(40).default(12),
       countdownSeconds: z.number().int().min(1).max(30).default(10),
+      selectCount: z.number().int().min(1).max(12).default(4),
       printSize: z.enum(["full", "strip"]).default("full"),
       prints: z.number().int().min(0).max(20),
       branches: z

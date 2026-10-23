@@ -4,7 +4,7 @@ import { config } from "../../config.js";
 import { Booking, PrintJob, Room, Setting } from "../../models/index.js";
 import { allow, can, hideMoney, requireBranch, staffBranch } from "../../middleware/auth.js";
 import { dispatchPrint } from "../../services/dnp.js";
-import { MEDIA_TTL_MS } from "../../services/media.js";
+import { MEDIA_TTL_MS, photoExpiry } from "../../services/media.js";
 import { printEvents } from "../../services/print-events.js";
 import { fail, id, date } from "../validation.js";
 import { KIOSK_LIVE_MS } from "../kiosk-session.js";
@@ -42,14 +42,33 @@ bookingsRouter.get("/bookings", async (req, res) => {
     .sort({ createdAt: -1 })
     .limit(500)
     .lean();
-  const jobs = list.length
-    ? await PrintJob.find({
-        booking: { $in: list.map((booking) => booking._id) },
-        createdAt: { $gt: new Date(Date.now() - MEDIA_TTL_MS) },
-      })
-        .sort({ createdAt: -1 })
-        .lean()
-    : [];
+  const ids = list.map((booking) => booking._id);
+  // Ảnh đại diện của đơn: ảnh đã ghép khung (lệnh in gần nhất), chưa có thì tấm đầu tiên còn hạn.
+  // Hai truy vấn chạy song song nên danh sách không chậm thêm một lượt đi về.
+  const [jobs, covers] = list.length
+    ? await Promise.all([
+        PrintJob.find({
+          booking: { $in: ids },
+          createdAt: { $gt: new Date(Date.now() - MEDIA_TTL_MS) },
+        })
+          .sort({ createdAt: -1 })
+          .lean(),
+        Booking.aggregate([
+          { $match: { _id: { $in: ids }, mediaDeleted: { $ne: true } } },
+          { $project: { photos: { $slice: [{ $filter: {
+            input: { $ifNull: ["$photos", []] },
+            as: "p",
+            cond: { $and: [{ $eq: ["$$p.kind", "original"] }, { $ne: ["$$p.deleted", true] }] },
+          } }, 5] } } },
+          { $project: { "photos._id": 1 } },
+        ]),
+      ])
+    : [[], []];
+  const now = Date.now();
+  const cover = new Map(covers.map((b) => [
+    String(b._id),
+    b.photos.find((p) => photoExpiry(p).getTime() > now)?._id,
+  ]));
   const latest = new Map();
   for (const job of jobs) {
     const key = String(job.booking);
@@ -59,9 +78,13 @@ bookingsRouter.get("/bookings", async (req, res) => {
     list.map((booking) => {
       const job = latest.get(String(booking._id));
       const visible = hideMoney(req, booking);
+      const photo = cover.get(String(booking._id));
       return {
         ...visible,
         latestPrint: job ? publicJob(job, booking.accessToken) : null,
+        coverPhoto: photo && booking.accessToken
+          ? `/api/albums/${booking.accessToken}/photos/${photo}?size=thumbnail`
+          : null,
       };
     }),
   );

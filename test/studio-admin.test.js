@@ -5,6 +5,7 @@ import mongoose from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import request from "supertest";
 import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 import { app } from "../src/app.js";
 import { config } from "../src/config.js";
 import { Booking, Frame, Package, Room, Screen, Setting, Shift, User } from "../src/models/index.js";
@@ -234,7 +235,7 @@ test("kiosks report online with the remote flip mode; packages can be limited to
   const { token } = (await staff.post(`/api/admin/rooms/${room._id}/device`).expect(200)).body;
   await request(app).post("/api/kiosk/ping").send({ device: "bad" }).expect(403);
   const ping = (await request(app).post("/api/kiosk/ping").send({ device: token }).expect(200)).body;
-  assert.deepEqual(ping.room, { _id: String(room._id), name: "Máy 1", branch: "Bắc Giang", flip: "off" });
+  assert.deepEqual(ping.room, { _id: String(room._id), name: "Máy 1", branch: "Bắc Giang", flip: "off", payment: "counter", paymentTest: false });
   const listed = (await admin.get("/api/admin/rooms").expect(200)).body.find((r) => r._id === String(room._id));
   assert.ok(Date.now() - new Date(listed.lastSeenAt) < 60000);
   assert.equal(listed.flip, "off");
@@ -249,5 +250,83 @@ test("kiosks report online with the remote flip mode; packages can be limited to
     name: "Gói 1", description: "", price: 100000, duration: 10, prints: 1, branches: [], active: true,
   }).expect(200);
   await staff.post("/api/admin/tickets/draft").send({ ...draft, requestKey: randomUUID() }).expect(201);
+  await Booking.deleteMany({});
+});
+
+test("packages snapshot how many photos the guest picks; the kiosk uploads one timelapse video per session", async () => {
+  await admin.put(`/api/admin/packages/${pack._id}`).send({
+    name: "Gói 1", description: "", price: 100000, duration: 10, prints: 1, selectCount: 6, active: true,
+  }).expect(200);
+  await admin.put(`/api/admin/packages/${pack._id}`).send({
+    name: "Gói 1", description: "", price: 100000, duration: 10, prints: 1, selectCount: 40, active: true,
+  }).expect(400);
+  const draft = (await staff.post("/api/admin/tickets/draft").send({
+    name: "Khách", phone: "", room: "", branch: "", package: String(pack._id), requestKey: randomUUID(),
+  }).expect(201)).body;
+  assert.equal((await Booking.findById(draft._id).lean()).selectCount, 6);
+
+  const sessionId = "session-video-test";
+  const accessToken = "v".repeat(48);
+  const booking = await Booking.create({
+    branch: "Bắc Giang", code: "515151", status: "checked_in", paid: true, accessToken,
+    captureSession: sessionId, captureStartedAt: new Date(), captureEndsAt: new Date(Date.now() + 600000),
+  });
+  const captureToken = jwt.sign({ type: "capture", booking: String(booking._id), sessionId }, config.secret);
+  await request(app).get(`/api/albums/${accessToken}/video`).expect(404);
+  await request(app).post("/api/kiosk/video").set("X-Capture-Token", "bad").set("Content-Type", "video/webm")
+    .send(Buffer.from("x")).expect(401);
+  const clip = Buffer.alloc(2048, 7);
+  await request(app).post("/api/kiosk/video").set("X-Capture-Token", captureToken)
+    .set("Content-Type", "video/mp4").send(clip).expect(201);
+  // Gửi lại thay video cũ.
+  await request(app).post("/api/kiosk/video").set("X-Capture-Token", captureToken)
+    .set("Content-Type", "video/mp4").send(clip).expect(201);
+  const album = (await request(app).get(`/api/albums/${accessToken}`).expect(200)).body;
+  assert.deepEqual(album.video, { mimeType: "video/mp4", size: 2048 });
+  const video = await request(app).get(`/api/albums/${accessToken}/video?download=1`).expect(200);
+  assert.equal(video.headers["content-type"], "video/mp4");
+  assert.match(video.headers["content-disposition"], /NXC-515151-video\.mp4/);
+  const part = await request(app).get(`/api/albums/${accessToken}/video`).set("Range", "bytes=0-99").expect(206);
+  assert.equal(part.headers["content-length"], "100");
+  await Booking.deleteMany({});
+});
+
+test("guests can buy a session at the kiosk with cash; test mode skips payment without revenue", async () => {
+  await admin.put(`/api/admin/rooms/${room._id}`).send({
+    name: "Máy 1", description: "", branch: "Bắc Giang", payment: "counter", paymentTest: false, active: true,
+  }).expect(200);
+  const { token } = (await staff.post(`/api/admin/rooms/${room._id}/device`).expect(200)).body;
+  const sale = (extra) => ({ device: token, package: String(pack._id), requestKey: randomUUID(), ...extra });
+  await request(app).post("/api/kiosk/sale").send(sale({ bills: [{ amount: 100000 }] })).expect(403);
+  await request(app).post("/api/kiosk/sale").send(sale({ skip: true })).expect(403);
+  await admin.put(`/api/admin/rooms/${room._id}`).send({
+    name: "Máy 1", description: "", branch: "Bắc Giang", payment: "cash", paymentTest: true, active: true,
+  }).expect(200);
+  const ping = (await request(app).post("/api/kiosk/ping").send({ device: token }).expect(200)).body.room;
+  assert.equal(ping.payment, "cash");
+  assert.equal(ping.paymentTest, true);
+  const short = await request(app).post("/api/kiosk/sale").send(sale({ bills: [{ amount: 50000 }] })).expect(400);
+  assert.match(short.body.message, /Chưa đủ tiền/);
+  const paid = sale({ bills: [{ amount: 50000 }, { amount: 100000 }] });
+  const first = (await request(app).post("/api/kiosk/sale").send(paid).expect(201)).body;
+  assert.ok(first.captureToken && first.accessToken);
+  assert.equal(first.booking.status, "checked_in");
+  // Mất phản hồi rồi gửi lại: cùng lượt chụp, không thu lần hai.
+  const again = (await request(app).post("/api/kiosk/sale").send(paid).expect(200)).body;
+  assert.equal(again.booking._id, first.booking._id);
+  const stored = await Booking.findById(first.booking._id).lean();
+  assert.equal(stored.total, 100000);
+  assert.equal(stored.cashReceived, 150000);
+  assert.equal(stored.paymentMethod, "cash");
+  assert.equal(stored.source, "kiosk");
+  await request(app).post("/api/kiosk/start").send({ captureToken: first.captureToken }).expect(200);
+  const test = (await request(app).post("/api/kiosk/sale").send(sale({ skip: true })).expect(201)).body;
+  const free = await Booking.findById(test.booking._id).lean();
+  assert.equal(free.paid, false);
+  assert.equal(free.total, 0);
+  const day = today();
+  const summary = (await admin.get(`/api/admin/stats/summary?from=${day}&to=${day}`).expect(200)).body;
+  assert.equal(summary.orders, 1, "test sessions are not orders");
+  assert.equal(summary.revenue, 100000);
   await Booking.deleteMany({});
 });

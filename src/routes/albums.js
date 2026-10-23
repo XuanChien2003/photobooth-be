@@ -114,6 +114,15 @@ albumsRouter.put("/:token/favorites", async (req, res) => {
   requireMedia(b);
   res.json(await albumBooking(await saveAlbumFavorites(b, d.ids)));
 });
+// Video tua nhanh của lượt chụp: xem trong album (hỗ trợ tua) hoặc tải về (?download=1).
+albumsRouter.get("/:token/video", async (req, res) => {
+  const b = await album(req, { code: 1, status: 1, captureEndsAt: 1, video: 1, mediaDeleted: 1 });
+  if (!b.video?.file || b.mediaDeleted) fail(404, "Album chưa có video.");
+  if (req.query.download === "1")
+    res.attachment(`NXC-${b.code}-video.${b.video.mimeType === "video/mp4" ? "mp4" : "webm"}`);
+  res.set("Cache-Control", "private, max-age=600");
+  await sendMedia(req, res, b.video.file, b.video.mimeType);
+});
 albumsRouter.get("/:token/download", async (req, res) => {
   const b = await album(req);
   requireMedia(b);

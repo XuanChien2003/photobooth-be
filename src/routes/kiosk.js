@@ -1,5 +1,6 @@
 import { Router } from "express";
 import crypto from "node:crypto";
+import express from "express";
 import jwt from "jsonwebtoken";
 import mongoose from "mongoose";
 import { z } from "zod";
@@ -10,7 +11,9 @@ import { timed } from "../services/image-save-queue.js";
 import { directUploadRequest, photoBody, readPhotoUpload, storedOriginal } from "./photo-upload.js";
 import { createDirectUpload, directUploadsEnabled } from "../services/direct-upload.js";
 import { sensitive } from "../middleware/rate-limits.js";
-import { fail, token } from "./validation.js";
+import { deleteMedia, saveMedia } from "../services/media.js";
+import { mediaReference } from "../services/r2.js";
+import { fail, today, token } from "./validation.js";
 import { publicBooking } from "./booking-helpers.js";
 import {
   captureBooking,
@@ -64,10 +67,117 @@ kioskRouter.post("/ping", async (req, res) => {
   const room = await Room.collection.findOneAndUpdate(
     { _id: new mongoose.Types.ObjectId(String(device.room)), active: true },
     { $set: { lastSeenAt: new Date() } },
-    { returnDocument: "after", projection: { name: 1, branch: 1, flip: 1 } },
+    { returnDocument: "after", projection: { name: 1, branch: 1, flip: 1, payment: 1, paymentTest: 1 } },
   );
   if (!room) fail(403, "Phòng chụp đã ngừng hoạt động.");
-  res.json({ room: { _id: room._id, name: room.name, branch: room.branch, flip: room.flip || "device" } });
+  res.json({ room: {
+    _id: room._id, name: room.name, branch: room.branch, flip: room.flip || "device",
+    payment: room.payment || "counter", paymentTest: Boolean(room.paymentTest),
+  } });
+});
+
+async function deviceRoom(token) {
+  let device;
+  try {
+    device = jwt.verify(token, config.secret);
+  } catch {
+    fail(403, "Máy chụp chưa được gán phòng hoặc liên kết đã hết hạn.");
+  }
+  if (device.type !== "kiosk") fail(403, "Thiết bị không hợp lệ.");
+  const room = await Room.findOne({ _id: device.room, active: true });
+  if (!room) fail(403, "Phòng chụp đã ngừng hoạt động.");
+  return room;
+}
+
+// Khách tự mua lượt chụp tại máy: chọn gói, đút tiền vào máy nhận tiền (máy chụp gửi từng tờ đã
+// nhận) rồi vào chụp luôn — không cần mã ở quầy. Chế độ thử (paymentTest) cho bỏ qua bước trả tiền
+// để thử máy khi chưa lắp máy nhận tiền: vé thử không tính doanh thu.
+kioskRouter.post("/sale", sensitive(), async (req, res) => {
+  const d = z.object({
+    device: z.string().max(2000),
+    package: z.string().regex(/^[a-f\d]{24}$/i),
+    requestKey: z.uuid(),
+    skip: z.boolean().default(false),
+    bills: z.array(z.object({
+      amount: z.number().int().min(1000).max(10_000_000),
+      at: z.string().datetime().optional(),
+    })).max(100).default([]),
+  }).parse(req.body);
+  const room = await deviceRoom(d.device);
+  // Gửi lại sau khi mất phản hồi: trả đúng lượt chụp đã tạo, không thu tiền lần nữa.
+  const existing = await Booking.findOne({ requestKey: d.requestKey }).select("+accessToken +captureSession");
+  if (existing) {
+    if (String(existing.room) !== String(room._id)) fail(409, "Mã giao dịch đã dùng ở máy khác.");
+    if (!existing.captureSession) fail(409, "Lượt chụp này đã kết thúc.");
+    return res.json(saleSession(existing, room, existing.captureSession));
+  }
+  if (d.skip ? !room.paymentTest : room.payment !== "cash")
+    fail(403, d.skip
+      ? "Máy chụp chưa bật chế độ thử (bỏ qua trả tiền). Bật ở Quản trị → Quản lý máy."
+      : "Máy chụp này chưa bật thanh toán tại máy. Bật ở Quản trị → Quản lý máy.");
+  const pack = await Package.findOne({ _id: d.package, active: true });
+  if (!pack) fail(400, "Gói chụp không còn hoạt động.");
+  if (pack.branches?.length && !pack.branches.includes(room.branch))
+    fail(400, `Gói “${pack.name}” không áp dụng tại chi nhánh ${room.branch}.`);
+  const received = d.bills.reduce((sum, bill) => sum + bill.amount, 0);
+  if (!d.skip && received < pack.price)
+    fail(400, `Chưa đủ tiền: đã nhận ${received.toLocaleString("vi-VN")} đ, gói ${pack.price.toLocaleString("vi-VN")} đ.`);
+  const sessionId = token();
+  const now = new Date();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const b = await Booking.create({
+        code: String(crypto.randomInt(100000, 1000000)),
+        accessToken: token(),
+        name: d.skip ? "Thử máy (bỏ qua trả tiền)" : "Khách tự phục vụ",
+        branch: room.branch,
+        room: room._id,
+        roomName: room.name,
+        package: pack._id,
+        packageName: pack.name,
+        shots: pack.shots,
+        countdownSeconds: pack.countdownSeconds || 10,
+        selectCount: pack.selectCount || 4,
+        printSize: pack.printSize || "full",
+        captureDuration: pack.duration,
+        prints: pack.prints,
+        total: d.skip ? 0 : pack.price,
+        discount: 0,
+        source: "kiosk",
+        date: today(),
+        time: "",
+        // Vé thử: không tính là đã thu tiền (không vào doanh thu / đối soát).
+        paid: !d.skip,
+        ...(!d.skip && { paidAt: now }),
+        paymentMethod: d.skip ? "test" : "cash",
+        cashReceived: received,
+        cashBills: d.bills.map((bill) => ({ amount: bill.amount, at: bill.at ? new Date(bill.at) : now })),
+        status: "checked_in",
+        captureSession: sessionId,
+        captureSeenAt: now,
+        requestKey: d.requestKey,
+      });
+      return res.status(201).json(saleSession(b, room, sessionId));
+    } catch (error) {
+      if (error.code === 11000 && error.keyPattern?.code) continue;
+      if (error.code === 11000 && error.keyPattern?.requestKey) {
+        const replay = await Booking.findOne({ requestKey: d.requestKey }).select("+accessToken +captureSession");
+        if (replay) return res.json(saleSession(replay, room, replay.captureSession));
+      }
+      throw error;
+    }
+  }
+  fail(503, "Không tạo được lượt chụp. Vui lòng thử lại.");
+});
+const saleSession = (b, room, sessionId) => ({
+  flip: room.flip || "device",
+  booking: publicBooking(b),
+  accessToken: b.accessToken,
+  captureToken: jwt.sign(
+    { type: "capture", booking: String(b._id), sessionId },
+    config.secret,
+    { expiresIn: "2h" },
+  ),
 });
 
 kioskRouter.post("/claim", sensitive(), async (req, res) => {
@@ -199,6 +309,22 @@ kioskRouter.post("/photo", photoBody, async (req, res) => {
       })),
     ),
   );
+});
+// Video tua nhanh của lượt chụp (máy chụp ghép từ hình trực tiếp, đã lật gương): gửi một lần
+// sau khi chụp xong, gửi lại thì thay video cũ.
+const videoBody = express.raw({ type: ["video/webm", "video/mp4"], limit: "60mb" });
+kioskRouter.post("/video", videoBody, async (req, res) => {
+  if (!Buffer.isBuffer(req.body) || !req.body.length) fail(400, "Video trống.");
+  const { b } = await captureBooking(z.string().parse(req.get("X-Capture-Token")));
+  const mimeType = req.is("video/mp4") ? "video/mp4" : "video/webm";
+  const file = mediaReference(`${crypto.randomUUID()}.${mimeType === "video/mp4" ? "mp4" : "webm"}`);
+  await saveMedia(file, req.body, mimeType);
+  const old = await Booking.findOneAndUpdate(
+    { _id: b._id },
+    { $set: { video: { file, mimeType, size: req.body.length } } },
+  ).select("video");
+  if (old?.video?.file && old.video.file !== file) await deleteMedia([old.video.file]).catch(() => {});
+  res.status(201).json({ ok: true, size: req.body.length });
 });
 kioskRouter.post("/finish", async (req, res) => {
   const { b } = await captureBooking(z.string().parse(req.body.captureToken));

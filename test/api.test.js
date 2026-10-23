@@ -480,6 +480,18 @@ test("order filters include the latest print preview and staff can reprint it", 
     paymentMethod: "cash",
     total: 120000,
     prints: 2,
+    photos: [
+      // Ảnh đã quá 24 giờ và ảnh đã xóa không làm ảnh đại diện.
+      { _id: new mongoose.Types.ObjectId(Math.floor((Date.now() - 2 * 86400000) / 1000)), file: "old.jpg", kind: "original" },
+      { file: "deleted.jpg", kind: "original", deleted: true },
+      { file: "cover.jpg", kind: "original" },
+    ],
+  });
+  const plain = await Booking.create({
+    name: "Khách chưa in", code: "797979", accessToken: randomUUID().replaceAll("-", ""),
+    branch: "Test branch", roomName: room.name, date: "2026-10-22", status: "completed",
+    paid: true, paymentMethod: "cash", total: 120000,
+    photos: [{ file: "first.jpg", kind: "original" }],
   });
   const source = await PrintJob.create({
     booking: booking._id,
@@ -513,6 +525,12 @@ test("order filters include the latest print preview and staff can reprint it", 
       order.latestPrint.image,
       `/api/albums/${booking.accessToken}/prints/${source._id}`,
     );
+    assert.equal(order.latestPrint.format, "jpg");
+    const cover = booking.photos.find((p) => p.file === "cover.jpg");
+    assert.equal(order.coverPhoto, `/api/albums/${booking.accessToken}/photos/${cover._id}?size=thumbnail`);
+    const unprinted = result.body.find((item) => item._id === String(plain._id));
+    assert.equal(unprinted.latestPrint, null);
+    assert.equal(unprinted.coverPhoto, `/api/albums/${plain.accessToken}/photos/${plain.photos[0]._id}?size=thumbnail`);
     const repeated = await staff
       .post(`/api/admin/bookings/${booking._id}/reprint`)
       .send({ jobId: String(source._id), copies: 3 })
@@ -524,7 +542,7 @@ test("order filters include the latest print preview and staff can reprint it", 
     assert.equal(stored.booking.toString(), booking._id.toString());
   } finally {
     await PrintJob.deleteMany({ booking: booking._id });
-    await Booking.deleteOne({ _id: booking._id });
+    await Booking.deleteMany({ _id: { $in: [booking._id, plain._id] } });
   }
 });
 
