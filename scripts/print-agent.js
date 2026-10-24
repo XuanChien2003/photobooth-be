@@ -20,10 +20,13 @@ async function call(endpoint, options = {}) {
   return response;
 }
 async function print(job) {
-  const printer = job.printSize === "strip" ? config.dnpStripPrinter : config.dnpPrinter;
-  if (!printer) throw new Error(job.printSize === "strip"
-    ? "Thiếu DNP_STRIP_PRINTER_NAME; bật 2inch cut trên hàng in riêng."
-    : "Thiếu DNP_PRINTER_NAME trên máy Windows nối máy in.");
+  // Khung nhỏ (2 dải trên một tờ 4x6) in qua hàng in "2inch cut" để máy cắt đôi; chưa tạo hàng in đó
+  // thì in qua hàng in chính (nhân viên tự cắt) thay vì bỏ lệnh in của khách.
+  const strip = job.printSize === "strip";
+  if (strip && !config.dnpStripPrinter && config.dnpPrinter)
+    console.warn("Chưa đặt DNP_STRIP_PRINTER_NAME — tờ 2 dải in qua máy chính, cần tự cắt đôi.");
+  const printer = strip ? config.dnpStripPrinter || config.dnpPrinter : config.dnpPrinter;
+  if (!printer) throw new Error("Thiếu DNP_PRINTER_NAME (tên máy in DNP trong Windows) trong file .env của print agent.");
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "photo-agent-"));
   try {
     const files = [];

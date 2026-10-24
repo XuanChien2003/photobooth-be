@@ -182,10 +182,17 @@ Các file liên quan: `src/services/media-storage.js`, `src/routes/admin/storage
 ## Thiết bị ở tiệm (chỉ máy Windows)
 
 - Máy in của tiệm: **DNP DS-RX1**, giấy **PR (4x6)** = ảnh 15 × 10 cm (152 × 102 mm).
-- `DNP_PRINTER_NAME`: tên máy in trong Windows (vd. `DS-RX1`) → lệnh in của khách tự gửi tới máy in
-  (`scripts/print-dnp.ps1` chọn khổ 4x6 của driver, tờ khác chiều với giấy tự xoay). Để trống (máy chủ chạy trên
-  Render) thì lễ tân in từ "Hàng chờ in" → “In 15×10”: trang in đúng 6 × 4 inch, chọn máy DS-RX1, khổ PR (4x6),
-  tỉ lệ 100%, lề Không có. Nút tải của lệnh in nhiều tờ tải một tệp ZIP đủ các tờ.
+- In tự động (máy chủ trên Render): máy chụp bấm "In ảnh" → lệnh in lên máy chủ → **print agent** chạy trên
+  máy Windows cắm DNP tự nhận lệnh và in (`scripts/print-dnp.ps1` chọn khổ 4x6 của driver, tờ khác chiều tự xoay).
+  1. Trên Render đặt `PRINT_AGENT_TOKEN` (chuỗi ngẫu nhiên ≥ 32 ký tự).
+  2. Trên máy Windows ở tiệm: cài Node.js 20+, chép thư mục `photobooth-be`, tạo `.env` với `PRINT_AGENT_API_URL`
+     (vd. `https://photobooth.ngathanh.workers.dev`), `PRINT_AGENT_BRANCH` (đúng tên chi nhánh của máy chụp),
+     `PRINT_AGENT_TOKEN` (giống Render), `DNP_PRINTER_NAME` (tên máy in trong Windows, vd. `DS-RX1`) và
+     `DNP_STRIP_PRINTER_NAME` (hàng in thứ hai của cùng máy, driver bật 2inch cut — cho khung nhỏ 2 dải).
+  3. Bấm đúp `scripts/print-agent.cmd` (đặt lối tắt vào `shell:startup` để tự chạy khi bật máy).
+  Máy chụp báo trạng thái thật: chờ máy in nhận lệnh / đang in / lỗi; quá 20 giây chưa nhận lệnh thì báo nhân viên.
+- `DNP_PRINTER_NAME` trên chính máy chủ (khi máy chủ chạy ngay trên máy Windows cắm DNP) cũng in tự động không cần
+  print agent. Không bật cách nào thì in lại từ trang Đơn hàng → "Tải ảnh" / "In ảnh".
 
 Tùy chọn phục vụ cả frontend đã build: đặt `FRONTEND_DIST=../Photo_FE/dist` và
 `CLIENT_URL=http://localhost:8080` trong `.env` rồi khởi động lại.
