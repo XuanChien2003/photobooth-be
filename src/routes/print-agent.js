@@ -61,7 +61,7 @@ printAgentRouter.post("/jobs/:id/complete", async (req, res) => {
   const job = await PrintJob.findOneAndUpdate({ _id: id.parse(req.params.id),
     spoolLeaseId: leaseId, spoolStatus: "sending" }, { $set: {
       spoolStatus: sent ? "sent" : "failed",
-      spoolMessage: sent ? "Đã gửi đến hàng đợi in Windows tại tiệm." :
+      spoolMessage: sent ? "Đã gửi đến hàng đợi máy in tại tiệm." :
         (message || "Máy in không nhận lệnh."),
     }, $unset: { spoolLeaseUntil: 1 } }, { new: true }).select("+spoolLeaseId");
   if (!job) fail(409, "Lệnh in đã được xử lý hoặc phiên máy in đã thay đổi.");

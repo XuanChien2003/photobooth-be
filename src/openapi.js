@@ -1020,7 +1020,7 @@ export const openapi = {
     "/api/print-agent/claim": {
       post: {
         tags: ["Máy in tại tiệm"],
-        summary: "Máy Windows nhận một lệnh in thuộc chi nhánh",
+        summary: "Máy in tại tiệm (Windows / Mac) nhận một lệnh in thuộc chi nhánh",
         description: "Dùng Authorization: Bearer PRINT_AGENT_TOKEN; mỗi lệnh được cấp một lease 5 phút.",
         requestBody: body({ branch: str("Chi nhánh đặt máy in") }, ["branch"]),
         responses: { ...ok("Lệnh in hoặc job: null"), ...errors(400, 403) },
@@ -1037,7 +1037,7 @@ export const openapi = {
     "/api/print-agent/jobs/{id}/complete": {
       post: {
         tags: ["Máy in tại tiệm"],
-        summary: "Báo kết quả gửi vào Windows Print Spooler",
+        summary: "Báo kết quả gửi vào hàng đợi máy in (Windows / CUPS trên Mac)",
         parameters: [pathParam("id", "ID lệnh in")],
         requestBody: body({ leaseId: uuid, sent: bool("Đã gửi thành công"), message: str("Lỗi nếu thất bại") }, ["leaseId", "sent"]),
         responses: { ...ok("Trạng thái spool"), ...errors(400, 403, 409) },

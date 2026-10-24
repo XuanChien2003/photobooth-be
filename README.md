@@ -179,17 +179,23 @@ có thể khác do metadata/index và cách quản lý lưu trữ. API xem thố
 Các file liên quan: `src/services/media-storage.js`, `src/routes/admin/storage.js`,
 `src/services/media.js` (TTL chung), `src/openapi.js`, `test/storage.test.js`.
 
-## Thiết bị ở tiệm (chỉ máy Windows)
+## Thiết bị ở tiệm (máy Windows hoặc Mac)
 
 - Máy in của tiệm: **DNP DS-RX1**, giấy **PR (4x6)** = ảnh 15 × 10 cm (152 × 102 mm).
 - In tự động (máy chủ trên Render): máy chụp bấm "In ảnh" → lệnh in lên máy chủ → **print agent** chạy trên
-  máy Windows cắm DNP tự nhận lệnh và in (`scripts/print-dnp.ps1` chọn khổ 4x6 của driver, tờ khác chiều tự xoay).
+  máy cắm DNP tự nhận lệnh và in. Windows: `scripts/print-dnp.ps1` chọn khổ 4x6 của driver. Mac:
+  `scripts/print-cups.js` in qua CUPS (`lp`), chọn khổ 4x6 trong PageSize của driver (hàng in đã đặt sẵn khổ
+  4x6 / 2inch cut thì giữ). Tờ khác chiều với khổ giấy tự xoay.
   1. Trên Render đặt `PRINT_AGENT_TOKEN` (chuỗi ngẫu nhiên ≥ 32 ký tự).
-  2. Trên máy Windows ở tiệm: cài Node.js 20+, chép thư mục `photobooth-be`, tạo `.env` với `PRINT_AGENT_API_URL`
+  2. Trên máy ở tiệm: cài Node.js 20+ (Mac: thêm driver DNP DS-RX1 cho Mac và thêm máy in trong Cài đặt hệ
+     thống → Máy in & Máy quét), chép thư mục `photobooth-be`, tạo `.env` với `PRINT_AGENT_API_URL`
      (vd. `https://photobooth.ngathanh.workers.dev`), `PRINT_AGENT_BRANCH` (đúng tên chi nhánh của máy chụp),
-     `PRINT_AGENT_TOKEN` (giống Render), `DNP_PRINTER_NAME` (tên máy in trong Windows, vd. `DS-RX1`) và
-     `DNP_STRIP_PRINTER_NAME` (hàng in thứ hai của cùng máy, driver bật 2inch cut — cho khung nhỏ 2 dải).
-  3. Bấm đúp `scripts/print-agent.cmd` (đặt lối tắt vào `shell:startup` để tự chạy khi bật máy).
+     `PRINT_AGENT_TOKEN` (giống Render), `DNP_PRINTER_NAME` (Windows: tên máy in, vd. `DS-RX1`; Mac: tên hàng
+     in CUPS — gõ `lpstat -e` trong Terminal, vd. `DS_RX1`) và `DNP_STRIP_PRINTER_NAME` (hàng in thứ hai của cùng
+     máy, driver bật 2inch cut — cho khung nhỏ 2 dải; để trống thì in qua hàng chính và tự cắt).
+  3. Windows: bấm đúp `scripts/print-agent.cmd` (đặt lối tắt vào `shell:startup` để tự chạy khi bật máy).
+     Mac: bấm đúp `scripts/print-agent.command` (lần đầu báo không có quyền chạy thì gõ
+     `chmod +x scripts/print-agent.command` trong Terminal; thêm vào Mục đăng nhập để tự chạy khi bật máy).
   Máy chụp báo trạng thái thật: chờ máy in nhận lệnh / đang in / lỗi; quá 20 giây chưa nhận lệnh thì báo nhân viên.
 - `DNP_PRINTER_NAME` trên chính máy chủ (khi máy chủ chạy ngay trên máy Windows cắm DNP) cũng in tự động không cần
   print agent. Không bật cách nào thì in lại từ trang Đơn hàng → "Tải ảnh" / "In ảnh".
