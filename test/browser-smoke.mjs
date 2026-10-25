@@ -1,6 +1,8 @@
-// Kiểm tra nhanh toàn bộ luồng nội bộ của tiệm trên trình duyệt thật (bản build Photo_FE/dist):
-// lễ tân cấp mã → máy chụp trong phòng → khách quét QR mở album trên điện thoại → gửi in
-// → lễ tân in 15 × 10 cm (DNP DS-RX1). Chạy: (cd ../Photo_FE && npm run build) && npm run test:browser
+// Kiểm tra nhanh toàn bộ luồng nội bộ của tiệm trên trình duyệt thật (bản build photobooth-fe/dist):
+// lễ tân tạo phiếu và xác nhận đã thu → máy chụp trong phòng (chọn cách chụp, chụp, chọn ảnh và
+// khung, ghép gửi album, in) → khách quét QR xem / tải ảnh trên điện thoại → lễ tân xem đơn hàng và
+// in lại → Trợ lí dung lượng dọn ảnh hết hạn.
+// Chạy: (cd ../photobooth-fe && npm run build) && npm run test:browser
 import "./environment.js";
 import { chromium } from "@playwright/test";
 import assert from "node:assert/strict";
@@ -30,41 +32,47 @@ await Promise.all(Object.values(mongoose.models).map((m) => m.init()));
 config.secret = "browser-test-secret-not-for-production-123456789";
 // Không bao giờ in thật / điều khiển máy ảnh thật khi chạy test trên máy ở tiệm.
 config.dnpPrinter = "";
+config.printAgentToken = "";
 config.mediaStorageLimitMB = 512;
 const cloudflare = process.argv.includes("--cloudflare");
 const browserOrigin = "http://localhost:8082";
 // With --cloudflare, CLIENT_URL deliberately names some other site: the Worker must validate
 // and translate the browser's origin for every mutation without Render listing it.
 config.origin = cloudflare ? "https://another-frontend.example" : browserOrigin;
-config.frontendDist = path.resolve(root, "../Photo_FE/dist");
+config.frontendDist = path.resolve(root, "../photobooth-fe/dist");
 const storageTestDirectory = await fs.mkdtemp(
   path.join(tmpdir(), "nxc-browser-uploads-"),
 );
 config.uploadDir = storageTestDirectory;
 await fs.access(path.join(config.frontendDist, "index.html")).catch(() => {
-  throw new Error("Chưa có bản build: chạy `npm run build` trong Photo_FE.");
+  throw new Error("Chưa có bản build: chạy `npm run build` trong photobooth-fe.");
 });
 const { app } = await import("../src/app.js");
 config.origin = browserOrigin;
 await Room.create({ name: "Phòng 01", branch: "Tiệm", active: true });
+// Chụp 4 tấm, khách chọn 2 tấm ghép vào khung hai ô và in 1 tờ.
 await Package.create({
   name: "Chụp nhanh",
   price: 70000,
   duration: 10,
+  shots: 4,
+  selectCount: 2,
+  countdownSeconds: 5,
   prints: 1,
   active: true,
 });
-// Khung 10 × 15 dọc, hai ô để thử thiếu ảnh yêu thích trước khi tự động ghép.
+// Khung 10 × 15 dọc 1200 × 1800 (cỡ khung thật), hai ô ảnh. Máy chụp vẽ khung trước rồi mới đặt
+// ảnh vào các ô, nên ô trong khung chỉ là chỗ để xem.
 const frame = await sharp({
-  create: { width: 600, height: 900, channels: 3, background: "#f6c9d6" },
+  create: { width: 1200, height: 1800, channels: 3, background: "#f6c9d6" },
 })
   .composite([
     {
       input: {
-        create: { width: 480, height: 540, channels: 3, background: "#fff" },
+        create: { width: 960, height: 1080, channels: 3, background: "#fff" },
       },
-      left: 60,
-      top: 90,
+      left: 120,
+      top: 180,
     },
   ])
   .png()
@@ -95,7 +103,8 @@ await Setting.create({
 const password = await bcrypt.hash("BrowserTest!123", 10);
 await User.create([
   { name: "Quản trị", email: "admin@test.local", password, role: "admin" },
-  { name: "Lễ tân", email: "counter@test.local", password, role: "staff" },
+  // Lễ tân phải được gán chi nhánh mới tạo phiếu và xem máy, đơn hàng của chi nhánh đó.
+  { name: "Lễ tân", email: "counter@test.local", password, role: "staff", branch: "Tiệm" },
 ]);
 const server = await new Promise((resolve) => {
   const s = app.listen(cloudflare ? 8083 : 8082, () => resolve(s));
@@ -126,10 +135,37 @@ const signIn = async (page, email) => {
       "Same-origin authentication cookie survives a Cloudflare page reload");
   }
 };
+// Chờ máy chủ làm xong việc chạy nền (máy chụp gửi ảnh ghép, lệnh in… sau khi màn hình đã chuyển).
+const until = async (check, what, timeout = 40000) => {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const value = await check();
+    if (value) return value;
+    if (Date.now() > deadline) throw new Error(`Hết thời gian chờ: ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+};
+// Link tải trong trang là đường dẫn tương đối; yêu cầu gửi từ test cần địa chỉ đầy đủ.
+const absolute = (href) => new URL(href, config.origin).href;
+const menu = (page, name) =>
+  page
+    .getByRole("navigation", { name: "Quản lý studio" })
+    .getByRole("button", { name, exact: true });
+// Màu của một điểm ảnh, theo tỉ lệ vị trí trong ảnh.
+const pixel = async (buffer, x, y) => {
+  const { width, height } = await sharp(buffer).metadata();
+  return [
+    ...(await sharp(buffer)
+      .extract({ left: Math.round(width * x), top: Math.round(height * y), width: 1, height: 1 })
+      .removeAlpha()
+      .raw()
+      .toBuffer()),
+  ];
+};
 try {
   if (cloudflare) {
     const { startCloudflareProxyServer } = await import(
-      "../../Photo_FE/test/cloudflare-proxy-server.mjs"
+      "../../photobooth-fe/test/cloudflare-proxy-server.mjs"
     );
     proxyServer = await startCloudflareProxyServer({
       apiOrigin: "http://localhost:8083",
@@ -170,11 +206,16 @@ try {
       .waitFor();
     assert.equal(await page.locator("a").count(), 0, `${route}: không có link`);
   }
+  // Mỗi màn hình vào được từ địa chỉ trần, và vừa chiều ngang từ điện thoại nhỏ tới màn hình lớn.
   for (const width of [360, 390, 768, 1440]) {
     await page.setViewportSize({ width, height: 900 });
-    for (const route of ["/admin", "/kiosk", "/khong-co"]) {
+    for (const [route, landmark] of [
+      ["/admin", () => page.getByRole("heading", { name: "Đăng nhập studio" })],
+      ["/kiosk", () => page.getByRole("button", { name: "Chạm để bắt đầu" })],
+      ["/khong-co", () => page.getByRole("heading", { name: "Không tìm thấy trang." })],
+    ]) {
       await page.goto(config.origin + route);
-      await page.locator("h1:visible, h2:visible").first().waitFor();
+      await landmark().waitFor();
       await noOverflow(page);
     }
   }
@@ -196,9 +237,7 @@ try {
     "text",
   );
   await signIn(admin, "admin@test.local");
-  await admin
-    .getByRole("button", { name: "Phòng & chi nhánh", exact: true })
-    .click();
+  await menu(admin, "Quản lý máy").click();
   await admin.getByRole("button", { name: /^Cài máy chụp cho / }).click();
   const kioskUrl = await admin
     .getByRole("link", { name: "Mở máy chụp", exact: true })
@@ -208,47 +247,73 @@ try {
     .getByRole("button", { name: "Đóng" })
     .click();
 
-  // ── Lễ tân (điện thoại): tổng quan → tạo mã; mất phản hồi vẫn không trùng vé ──
+  // ── Lễ tân (điện thoại): tạo phiếu rồi xác nhận đã thu; mất phản hồi vẫn không trùng phiếu / mã ──
   const counterContext = await browser.newContext({
     viewport: { width: 390, height: 844 },
   });
   const counter = await counterContext.newPage();
   watch(counter);
   await signIn(counter, "counter@test.local");
-  await counter.getByText("1/1 phòng đang trống").waitFor();
+  await counter.getByText("1 trống", { exact: true }).waitFor();
   await counter.getByRole("button", { name: "Tạo mã chụp" }).click();
-  await counter.locator("select[name=paymentMethod]").selectOption("transfer");
-  await counter.getByAltText("Mã QR chuyển khoản").waitFor();
+  const ticket = counter.getByRole("dialog", { name: "Tạo mã chụp cho khách" });
+  await ticket.locator("select[name=paymentMethod]").selectOption("transfer");
+  await ticket.getByAltText("Mã QR chuyển khoản").waitFor();
   assert.equal(
-    await counter
-      .getByRole("dialog")
-      .locator('input[type="date"], input[type="time"]')
-      .count(),
+    await ticket.locator('input[type="date"], input[type="time"]').count(),
     0,
     "Không có ô chọn ngày giờ: mã dùng trong ngày",
   );
-  await counter.getByText("Thông tin khách (không bắt buộc)").click();
-  await counter.getByLabel("Tên khách", { exact: true }).fill("Khách thử");
-  await counter.locator("input[name=received]").check();
-  let loseTicketResponse = true;
-  await counter.route("**/api/admin/tickets", async (route) => {
+  await ticket.getByText("Thông tin khách (không bắt buộc)").click();
+  await ticket.getByLabel("Tên khách", { exact: true }).fill("Khách thử");
+  // Phản hồi của máy chủ bị mất đúng một lần: bấm lại phải ra cùng một phiếu.
+  let loseDraftResponse = true;
+  await counter.route("**/api/admin/tickets/draft", async (route) => {
     const response = await route.fetch();
-    if (loseTicketResponse) {
-      loseTicketResponse = false;
+    if (loseDraftResponse) {
+      loseDraftResponse = false;
       await route.abort("failed");
     } else await route.fulfill({ response });
   });
-  const create = counter.getByRole("button", {
-    name: "Xác nhận thanh toán & tạo mã",
-  });
-  await create.click();
+  const draft = ticket.getByRole("button", { name: "Tạo phiếu chụp" });
+  await draft.click();
   await counter
     .getByRole("alert")
     .filter({ hasText: /kết nối được máy chủ/ })
     .first()
     .waitFor();
-  await create.click();
-  await counter.getByRole("heading", { name: "Mã chụp đã sẵn sàng" }).waitFor();
+  await draft.click();
+  await counter.getByRole("dialog", { name: "Chờ xác nhận đã thu" }).waitFor();
+  assert.equal(await Booking.countDocuments({ name: "Khách thử" }), 1);
+  // Phiếu mới chỉ ghi nhận gói: chưa có mã 6 số, chưa thu tiền.
+  const pending = await Booking.findOne({ name: "Khách thử" });
+  assert.equal(pending.status, "pending");
+  assert.equal(pending.paid, false);
+  assert.equal(pending.code, undefined);
+  assert.equal(await counter.locator(".ticket-code").count(), 0);
+  const collected = counter.getByRole("dialog", { name: "Chờ xác nhận đã thu" });
+  const activate = collected.getByRole("button", {
+    name: "Xác nhận đã thu & hiện mã 6 số",
+  });
+  assert.equal(await activate.isDisabled(), true, "Chưa tích đã nhận tiền thì chưa cấp mã");
+  await collected.getByRole("checkbox").check();
+  // Mất phản hồi lúc xác nhận thu tiền: bấm lại vẫn là một mã, không cấp mã thứ hai.
+  let loseActivateResponse = true;
+  await counter.route("**/api/admin/tickets/*/activate", async (route) => {
+    const response = await route.fetch();
+    if (loseActivateResponse) {
+      loseActivateResponse = false;
+      await route.abort("failed");
+    } else await route.fulfill({ response });
+  });
+  await activate.click();
+  await counter
+    .getByRole("alert")
+    .filter({ hasText: /kết nối được máy chủ/ })
+    .first()
+    .waitFor();
+  await activate.click();
+  await counter.getByRole("dialog", { name: "Mã chụp đã sẵn sàng" }).waitFor();
   await noOverflow(counter);
   const booking = await Booking.findOne({ name: "Khách thử" }).select(
     "+accessToken",
@@ -256,6 +321,8 @@ try {
   assert.equal(await Booking.countDocuments({ name: "Khách thử" }), 1);
   assert.equal(booking.status, "confirmed");
   assert.equal(booking.paid, true);
+  assert.equal(booking.paymentMethod, "transfer");
+  assert.match(booking.code, /^\d{6}$/);
   assert.equal(
     await counter.getByLabel("Mã chụp của khách").innerText(),
     booking.code,
@@ -306,6 +373,8 @@ try {
     0,
     "Không có nút chụp trên màn hình: chỉ chụp bằng máy ảnh",
   );
+  await kiosk.getByRole("button", { name: "Chạm để bắt đầu" }).click();
+  await kiosk.getByRole("heading", { name: "Nhập mã chụp" }).waitFor();
   await kiosk.getByText("Cài đặt máy chụp (nhân viên)").click();
   await kiosk.getByRole("button", { name: /Chọn thư mục ảnh/ }).click();
   await kiosk
@@ -316,31 +385,60 @@ try {
     .getByRole("textbox", { name: "Mã vé", exact: true })
     .fill(booking.code);
   await kiosk.getByRole("button", { name: "Bắt đầu chụp" }).click();
-  await kiosk.getByRole("timer", { name: "Thời gian còn lại" }).waitFor();
-  await kiosk.locator(".self-viewfinder").waitFor();
-  assert.equal(
-    await kiosk.getByText("Bấm nút chụp trên máy ảnh / remote").count(),
-    0,
-    "Đã bỏ hướng dẫn đè lên hình camera",
-  );
+  // Chọn cách chụp: khách dùng dây bấm của máy ảnh (không có nút chụp trên màn hình).
+  const mode = kiosk.getByRole("dialog", { name: "Chọn cách chụp" });
+  await mode.waitFor();
+  await mode.getByRole("button", { name: /Bấm dây/ }).click();
+  await kiosk.locator(".shoot-screen.phase-shoot").waitFor({ timeout: 20000 });
   assert.equal(
     await kiosk.getByRole("button", { name: "Chụp ảnh" }).count(),
     0,
     "Màn chụp không có nút chụp",
   );
   await kiosk.waitForTimeout(1000);
-  for (const [i, n] of ["#01", "#02"].entries()) {
+  for (const [i, n] of ["1", "2"].entries()) {
     await shoot(`DSCF000${i + 1}.JPG`);
     await kiosk
-      .locator(".booth-shot figcaption", { hasText: n })
+      .locator(".shoot-thumbs .shoot-thumb-no", { hasText: n })
       .waitFor({ timeout: 20000 });
   }
-  await kiosk.getByRole("button", { name: "Hoàn thành chụp" }).click();
-  await kiosk.getByRole("button", { name: "Kết thúc & nhận ảnh" }).click();
-  await kiosk.getByRole("heading", { name: "Quét mã để nhận 2 ảnh" }).waitFor();
-  assert.equal((await Booking.findById(booking._id)).status, "completed");
+  await kiosk.getByRole("button", { name: "Chụp xong, chọn ảnh" }).click();
+  // Chọn ảnh và khung trên cùng một màn: chọn đủ 2 tấm của gói rồi bấm In ảnh.
+  await kiosk.getByRole("heading", { name: /để chọn ảnh yêu thích/ }).waitFor();
+  const picks = kiosk
+    .getByRole("group", { name: "Ảnh đã chụp" })
+    .getByRole("button");
+  assert.equal(await picks.count(), 2);
+  const print = kiosk.getByRole("button", { name: "In ảnh", exact: true });
+  assert.equal(await print.isDisabled(), true, "Chọn đủ ảnh của gói mới được in");
+  await picks.nth(0).click();
+  await picks.nth(1).click();
+  await print.click();
+  await kiosk.getByRole("heading", { name: /Quét QR để tải ảnh/ }).waitFor();
+  await kiosk.getByRole("img", { name: "Ảnh đã ghép khung" }).waitFor();
+  // Máy chủ chưa bật máy in tự động (config.dnpPrinter trống): máy chụp mời nhân viên in giúp.
+  await kiosk
+    .getByRole("status")
+    .filter({ hasText: /Nhờ nhân viên in ảnh giúp bạn/ })
+    .waitFor({ timeout: 30000 });
+  // Việc chạy nền của máy chụp: chốt phiên, tải ảnh gốc lên album, gửi ảnh ghép và lệnh in.
+  await until(async () => (await Booking.findById(booking._id)).status === "completed", "chốt phiên chụp");
+  const album = await until(async () => {
+    const b = await Booking.findById(booking._id);
+    return b.photos.length === 2 && b.composite?.file ? b : null;
+  }, "ảnh gốc và ảnh ghép khung lên album");
+  assert.deepEqual(album.photos.map((p) => p.number), [1, 2]);
+  // Video tua nhanh ghép từ hình trực tiếp (camera giả của trình duyệt), gửi lên sau ảnh ghép.
+  const withVideo = await until(async () => {
+    const b = await Booking.findById(booking._id);
+    return b.video?.file ? b : null;
+  }, "video tua nhanh");
+  const sent = await until(() => PrintJob.findOne({ code: booking.code }), "lệnh in từ máy chụp");
+  assert.equal(sent.sheets.length, 1, "Gói 1 tờ → một tờ in");
+  assert.equal(sent.frameName, "Hồng");
+  assert.equal(await PrintJob.countDocuments({ code: booking.code }), 1);
 
-  // ── Khách quét QR: album trên điện thoại (không có link sang trang nào khác) ──
+  // ── Khách quét QR: album chỉ để xem và tải, trên điện thoại ──
   const phoneContext = await browser.newContext({
     viewport: { width: 390, height: 844 },
     hasTouch: true,
@@ -348,276 +446,115 @@ try {
   const phone = await phoneContext.newPage();
   watch(phone);
   await phone.goto(`${config.origin}/album/${booking.accessToken}`);
-  await phone.getByRole("heading", { name: "Thư viện ảnh" }).waitFor();
-  assert.equal(await phone.locator(".site-header a").count(), 0);
+  const viewer = phone.getByRole("region", { name: "Ảnh và video của bạn" });
+  await viewer.waitFor();
   await noOverflow(phone);
-
-  // Khách thêm nhiều ảnh đã chỉnh trên điện thoại bằng ô Thêm ảnh trong thư viện.
-  const uploadInput = phone.getByLabel("Chọn ảnh từ điện thoại", {
-    exact: true,
+  // Ảnh ghép khung đứng đầu, rồi video tua nhanh, rồi tới từng ảnh gốc.
+  assert.deepEqual(
+    await viewer
+      .getByRole("tab")
+      .evaluateAll((tabs) => tabs.map((tab) => tab.getAttribute("aria-label"))),
+    ["Ảnh ghép khung", "Video tua nhanh", "Ảnh 1", "Ảnh 2"],
+  );
+  await phone.waitForFunction(() => {
+    const image = document.querySelector(".album-viewer-stage img");
+    return image?.complete && image.naturalWidth > 0;
   });
-  assert.equal(
-    await uploadInput.getAttribute("accept"),
-    "image/jpeg,image/png,image/webp",
-  );
-  assert.equal(await uploadInput.getAttribute("multiple"), "");
-  const phonePhotos = [
-    {
-      name: "phone-edited.jpg",
-      mimeType: "image/jpeg",
-      buffer: await sharp({
-        create: {
-          width: 900,
-          height: 1200,
-          channels: 3,
-          background: "#ec433a",
-        },
-      })
-        .jpeg()
-        .toBuffer(),
-    },
-    {
-      name: "phone-edited.png",
-      mimeType: "image/png",
-      buffer: await sharp({
-        create: {
-          width: 1200,
-          height: 900,
-          channels: 3,
-          background: "#36a6d6",
-        },
-      })
-        .png()
-        .toBuffer(),
-    },
-  ];
-  const uploadResponses = [];
-  const uploadKeys = [];
-  const uploadRoute = `**/api/albums/${booking.accessToken}/photos`;
-  await phone.route(uploadRoute, async (route) => {
-    const request = route.request();
-    // Hai ảnh gửi song song: JPEG còn làm ảnh xem trước nên có thể tới sau PNG. Nhận ra theo tên.
-    const original = phonePhotos.find((p) => p.name === decodeURIComponent(request.headers()["x-photo-name"]));
-    assert.equal(request.headers()["content-type"], original.mimeType);
-    const previewLength = Number(request.headers()["x-photo-preview-length"] || 0);
-    const body = request.postDataBuffer();
-    assert.deepEqual(body.subarray(0, body.length - previewLength), original.buffer, "Ảnh điện thoại gửi nguyên byte, không base64");
-    assert.equal(previewLength > 0, original.mimeType === "image/jpeg", "JPEG kèm ảnh xem trước điện thoại tự làm");
-    uploadKeys.push(request.headers()["x-photo-key"]);
-    const response = await route.fetch();
-    uploadResponses.push({
-      status: response.status(),
-      album: await response.json(),
-    });
-    await route.fulfill({ response });
-  });
-  const chooseFiles = phone.waitForEvent("filechooser");
-  await phone
-    .getByRole("button", { name: "Thêm ảnh từ điện thoại", exact: true })
-    .click();
-  await (await chooseFiles).setFiles(phonePhotos);
-  await phone
-    .getByRole("button", { name: "Xem & chỉnh ảnh 04", exact: true })
-    .waitFor();
-  await phone
-    .getByRole("button", { name: "Thêm ảnh từ điện thoại", exact: true })
-    .waitFor({ state: "visible" });
-  await phone.waitForFunction(
-    () => !document.querySelector(".studio-upload-tile").disabled,
-  );
-  await phone.unroute(uploadRoute);
+  await phone.getByText(`#${booking.code}`, { exact: true }).waitFor();
+  const albumPath = `/api/albums/${booking.accessToken}`;
+  const compositeHref = await viewer
+    .getByRole("link", { name: "Tải ảnh ghép" })
+    .getAttribute("href");
+  assert.match(compositeHref, new RegExp(`${albumPath}/composite\\?download=1$`));
+  const zipHref = await viewer
+    .getByRole("link", { name: "Tải tất cả ảnh (ZIP)" })
+    .getAttribute("href");
+  assert.match(zipHref, new RegExp(`${albumPath}/download$`));
+  await viewer.getByRole("tab", { name: "Video tua nhanh" }).click();
+  const videoHref = await viewer
+    .getByRole("link", { name: "Tải video" })
+    .getAttribute("href");
+  assert.ok(videoHref.endsWith(`${albumPath}/video?download=1`), videoHref);
+  const video = await phone.request.get(absolute(videoHref));
+  assert.equal(video.status(), 200);
+  assert.equal(video.headers()["content-type"], withVideo.video.mimeType);
+  assert.equal((await video.body()).length, withVideo.video.size);
+  await viewer.getByRole("tab", { name: "Ảnh 2" }).click();
+  await viewer.getByRole("link", { name: "Tải ảnh gốc" }).waitFor();
+  assert.equal(await viewer.getByRole("img", { name: "Ảnh 2" }).count(), 1);
+  // Album chỉ có các link tải về: không có đường dẫn sang trang nào khác.
   assert.deepEqual(
-    uploadResponses.map((r) => r.status),
-    [201, 201],
+    (await phone.locator("a").evaluateAll((links) => links.map((a) => a.getAttribute("href"))))
+      .filter((href) => !href.includes(albumPath)),
+    [],
   );
-  assert.deepEqual(
-    uploadResponses.map((r) => r.album.photos.length),
-    [3, 4],
-  );
-  assert.equal(new Set(uploadKeys).size, 2, "Mỗi ảnh có khóa tải riêng");
-  const uploadedAlbum = await Booking.findById(booking._id);
-  assert.equal(
-    uploadedAlbum.photos.length,
-    4,
-    "Hai ảnh chụp + hai ảnh điện thoại, không trùng",
-  );
-  assert.equal(new Set(uploadedAlbum.photos.map((p) => String(p._id))).size, 4);
-  assert.deepEqual(
-    uploadedAlbum.photos.map((p) => p.number),
-    [1, 2, 3, 4],
-  );
-  assert.deepEqual(
-    uploadedAlbum.photos.slice(2).map((p) => p.originalName).sort(),
-    phonePhotos.map((p) => p.name).sort(),
-  );
-  const uploadedPhoto = uploadedAlbum.photos[2];
-  await phone.reload();
-  await phone
-    .getByRole("button", { name: "Xem & chỉnh ảnh 04", exact: true })
-    .waitFor();
-  assert.equal(
-    await phone.locator(".studio-grid figure").count(),
-    4,
-    "Ảnh tải lên còn sau khi tải lại trang",
-  );
+  // Bản ghép máy chụp gửi lên: đúng cỡ khung và ô ảnh chứa ảnh khách chụp (xanh lục), không phải nền hồng.
+  const composite = await phone.request.get(absolute(compositeHref));
+  assert.equal(composite.status(), 200);
+  assert.match(composite.headers()["content-type"], /image\/jpeg/);
+  const compositeImage = Buffer.from(await composite.body());
+  assert.equal((await sharp(compositeImage).metadata()).width, 1200);
+  assert.equal((await sharp(compositeImage).metadata()).height, 1800);
+  const [red, green] = await pixel(compositeImage, 0.5, 0.4);
+  assert.ok(red < 170 && green > 140, `Ô ảnh chứa ảnh khách chụp, không phải nền khung: ${red},${green}`);
+  const [frameRed] = await pixel(compositeImage, 0.03, 0.4);
+  assert.ok(frameRed > 220, "Viền khung giữ màu hồng");
+  // Tờ in máy chụp gửi cho lễ tân giống bản ghép: ảnh khách nằm trong ô.
+  const sheet = await phone.request.get(`${config.origin}${albumPath}/prints/${sent._id}`);
+  assert.equal(sheet.status(), 200);
+  const [sheetRed, sheetGreen] = await pixel(Buffer.from(await sheet.body()), 0.5, 0.4);
+  assert.ok(sheetRed < 170 && sheetGreen > 140, "Ô ảnh trên tờ in chứa ảnh khách chụp");
+  // ZIP: đúng hai ảnh gốc của buổi chụp.
+  const zip = await phone.request.get(absolute(zipHref));
+  assert.equal(zip.status(), 200);
+  assert.match(zip.headers()["content-type"], /zip/);
+  const zipBytes = Buffer.from(await zip.body());
+  assert.equal(zipBytes.readUInt32LE(0), 0x04034b50);
+  assert.equal(zipBytes.readUInt16LE(zipBytes.length - 12), 2);
+  // Làm mới ảnh không đổi gì và không báo lỗi.
+  await phone.getByRole("button", { name: "Làm mới ảnh" }).click();
+  await phone.getByRole("button", { name: "Làm mới ảnh" }).waitFor();
   await noOverflow(phone);
   if (process.env.UI_SCREENSHOTS) {
     await fs.mkdir(process.env.UI_SCREENSHOTS, { recursive: true });
     await phone.screenshot({
-      path: path.join(process.env.UI_SCREENSHOTS, "album-upload-mobile.png"),
+      path: path.join(process.env.UI_SCREENSHOTS, "album-mobile.png"),
       fullPage: true,
     });
   }
 
-  // Ảnh điện thoại dùng được trong trình sửa, ảnh yêu thích và khung gửi in.
-  await phone
-    .getByRole("button", { name: "Xem & chỉnh ảnh 03", exact: true })
-    .click();
-  const editor = phone.getByRole("dialog", {
-    name: "Xem & chỉnh ảnh",
-    exact: true,
-  });
-  await editor.getByRole("button", { name: "Đen trắng", exact: true }).click();
-  await editor.getByRole("button", { name: "Xong", exact: true }).click();
-  await editor.waitFor({ state: "hidden" });
-  await phone.reload();
-  await phone
-    .getByRole("button", { name: "Xem & chỉnh ảnh 03", exact: true })
-    .waitFor();
-  assert.equal(
-    await phone
-      .getByRole("button", { name: "Xem & chỉnh ảnh 03", exact: true })
-      .locator("img")
-      .evaluate((img) => img.style.filter),
-    "grayscale(1)",
-    "Chỉnh sửa ảnh điện thoại còn sau khi tải lại trang",
-  );
-  await phone.getByRole("button", { name: "Thả tim ảnh 03" }).click();
-  await phone.getByRole("button", { name: "Bỏ tim ảnh 03" }).waitFor();
-  assert.equal(
-    (await Booking.findById(booking._id)).photos.id(uploadedPhoto._id).favorite,
-    true,
-  );
-  await phone.getByRole("button", { name: /Chọn chủ đề/ }).click();
-  await phone.getByRole("button", { name: /Hồng/ }).click();
-  await phone
-    .locator(".studio-actions")
-    .getByRole("button", { name: /Ghép ảnh/ })
-    .click();
-  const shortage = phone.getByRole("dialog", {
-    name: "Chưa đủ ảnh yêu thích",
-    exact: true,
-  });
-  await shortage.getByText("Còn thiếu 1 ảnh yêu thích (1/2).", { exact: true }).waitFor();
-  assert.equal(await phone.locator(".frame-canvas canvas").count(), 0,
-    "Thiếu ảnh phải xác nhận trước, không tự ghép ngầm");
-  await noOverflow(phone);
-  await shortage.getByRole("button", { name: "Tự động ghép", exact: true }).click();
-  await shortage.waitFor({ state: "hidden" });
-  await phone.locator(".frame-canvas canvas").waitFor();
-  await phone.waitForFunction(({ token, photo }) => {
-    const state = JSON.parse(localStorage.getItem(`photo-flow-v5-${token}`) || "null");
-    return Object.values(state?.layouts || {})[0]?.[0]?.photo === photo;
-  }, { token: booking.accessToken, photo: String(uploadedPhoto._id) });
-  const composedPhotos = await phone.evaluate((token) => {
-    const state = JSON.parse(localStorage.getItem(`photo-flow-v5-${token}`));
-    return Object.values(state.layouts)[0].map((slot) => slot.photo);
-  }, booking.accessToken);
-  assert.equal(
-    composedPhotos[0],
-    String(uploadedPhoto._id),
-    "Tự động ghép ưu tiên ảnh yêu thích khách tải lên",
-  );
-  assert.equal(composedPhotos.length, 2, "Tự động ghép lấp đủ hai ô");
-  assert.ok(composedPhotos.every(Boolean), "Không để ô trống khi khách đã xác nhận tự động ghép");
-  assert.notEqual(composedPhotos[0], composedPhotos[1],
-    "Thư viện còn ảnh thì bổ sung ảnh khác trước khi lặp ảnh yêu thích");
-  assert.equal((await Booking.findById(booking._id)).photos.filter((photo) => photo.favorite).length, 1,
-    "Tự động ghép bổ sung ô ảnh, không tự thả tim ảnh còn lại");
-  await phone
-    .locator(".studio-actions")
-    .getByRole("button", { name: /Xem kết quả/ })
-    .click();
-  const send = phone.getByRole("button", { name: "Gửi in (1 khung → 1 tờ)" });
-  await send.waitFor({ timeout: 30000 });
-  await send.click();
-  await phone
-    .getByRole("region", { name: "Kết quả gửi in", exact: true })
-    .waitFor();
-  await phone
-    .getByRole("heading", { name: "Ảnh đã được gửi tới quầy", exact: true })
-    .waitFor();
-  await phone
-    .getByRole("button", { name: "Xem và tải ảnh", exact: true })
-    .click();
-  await phone.getByRole("button", { name: "Đã dùng hết tờ in" }).waitFor();
-  const phonePrint = await PrintJob.findOne({ code: booking.code });
-  const printImage = await fetch(
-    `${config.origin}/api/albums/${booking.accessToken}/prints/${phonePrint._id}`,
-  ).then((r) => r.arrayBuffer());
-  const [red, green, blue] = await sharp(Buffer.from(printImage))
-    .extract({ left: 590, top: 700, width: 1, height: 1 })
-    .removeAlpha()
-    .raw()
-    .toBuffer();
-  assert.ok(
-    Math.max(red, green, blue) - Math.min(red, green, blue) <= 2,
-    "Bộ lọc đen trắng có trong file in",
-  );
-  assert.ok(
-    red > 60 && red < 180,
-    "Ô ảnh chứa ảnh điện thoại đã sửa, không phải nền trống",
-  );
-
-  // ── Lễ tân in 15 × 10 cm trên DNP DS-RX1 ──
-  await admin.getByRole("button", { name: /Hàng chờ in/ }).click();
-  const printPopup = admin.waitForEvent("popup");
-  await admin
-    .getByRole("button", { name: /In 15×10/ })
-    .first()
-    .click();
-  const printPage = await printPopup;
-  watch(printPage);
-  await printPage.getByText("Ảnh đã sẵn sàng.", { exact: false }).waitFor();
-  await printPage.emulateMedia({ media: "print" });
-  assert.equal(await printPage.locator(".toolbar").isVisible(), false);
-  const pdf = (
-    await printPage.pdf({ preferCSSPageSize: true, printBackground: true })
-  ).toString("latin1");
-  const boxes = [
-    ...pdf.matchAll(/\/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]/g),
-  ];
-  assert.equal(boxes.length, 1, "Bản in đúng 1 trang");
-  assert.ok(
-    Math.abs((Number(boxes[0][1]) / 72) * 25.4 - 152.4) < 0.5,
-    "DNP DS-RX1 PR (4x6): rộng 6 inch (152,4 mm)",
-  );
-  assert.ok(
-    Math.abs((Number(boxes[0][2]) / 72) * 25.4 - 101.6) < 0.5,
-    "DNP DS-RX1 PR (4x6): cao 4 inch (101,6 mm)",
-  );
-  assert.equal(
-    (await PrintJob.findOne({ code: booking.code })).status,
-    "pending",
-    "Mở hộp thoại in không tự đánh dấu đã in",
-  );
-  await printPage.close();
-  await admin
-    .locator(".print-card")
-    .getByRole("button", { name: /Đã in/ })
-    .click();
-  await admin
-    .getByText(/Đã đánh dấu in xong/)
-    .first()
-    .waitFor();
-  assert.equal((await Booking.findById(booking._id)).printed, true);
-  await phone
-    .getByText(/Lễ tân đã in xong/)
-    .first()
-    .waitFor({ timeout: 15000 });
+  // ── Lễ tân xem đơn hàng, tải ảnh và in lại ──
+  await menu(admin, "Đơn hàng").click();
+  const order = admin.locator("article.order-card", { hasText: `#${booking.code}` });
+  await order.waitFor();
+  assert.match(await order.innerText(), /Khách thử/);
+  assert.match(await order.innerText(), /Chuyển khoản/);
+  assert.match(await order.innerText(), /1\/1 tờ/);
+  assert.match(await order.innerText(), /Hồng/);
+  await order.getByRole("img", { name: "Ảnh đã ghép khung" }).first().waitFor();
+  await order.getByRole("button", { name: /Tải ảnh/ }).click();
+  await admin.getByRole("menuitem", { name: /Tải tất cả ảnh \(ZIP\)/ }).waitFor();
+  await admin.getByRole("menuitem", { name: /Tải ảnh ghép khung/ }).waitFor();
+  await admin.keyboard.press("Escape");
+  await order.getByRole("button", { name: /^In ảnh/ }).click();
+  const printDialog = admin.getByRole("dialog", { name: `In ảnh đơn ${booking.code}` });
+  await printDialog.getByRole("img", { name: `Ảnh in của đơn ${booking.code}` }).waitFor();
+  assert.match(await printDialog.innerText(), /Số tờ trong file\s*1/);
+  await printDialog.getByLabel("Số bản in lại").selectOption("2");
+  await printDialog.getByRole("button", { name: "In lại ảnh" }).click();
+  await admin.getByText("Đã gửi 2 bản vào hàng chờ in.").first().waitFor();
+  // Lệnh in lại có thêm một bản ghi riêng và báo ngay trên màn hình quản trị đang mở.
+  const reprint = await until(async () => {
+    const jobs = await PrintJob.find({ code: booking.code }).sort({ createdAt: 1 });
+    return jobs.length === 2 ? jobs[1] : null;
+  }, "lệnh in lại");
+  assert.equal(reprint.copies, 2);
+  assert.equal(reprint.file, sent.file, "In lại đúng file khách đã gửi");
+  await admin.getByText(/Lệnh in mới · vé #/).first().waitFor();
 
   // ── Trợ lí dung lượng: số liệu thật, giới hạn và chỉ dọn ảnh đã hết hạn ──
-  await admin.getByText("Trợ lí Minh Dâm", { exact: true }).click();
+  // Trợ lí không có mục trong menu: mở từ cảnh báo dung lượng (MongoDB tạm chưa đo được cả cluster).
+  await admin.getByRole("button", { name: "Mở trợ lí để dọn ảnh", exact: true }).click();
   await admin
     .getByRole("heading", { name: "Trợ lí Minh Dâm", exact: true })
     .waitFor();
@@ -641,7 +578,7 @@ try {
     "MongoDB tạm không hỗ trợ atlasSize",
   );
   assert.equal(stored.quota.remainingBytes, null);
-  assert.ok(stored.media.files >= 9 && stored.media.bytes > 0);
+  assert.ok(stored.media.files >= 6 && stored.media.bytes > 0);
   assert.ok(
     stored.database.available &&
       stored.database.usedBytes >= stored.media.bytes,
@@ -782,20 +719,20 @@ try {
   assert.equal(await readMedia("storage-expired-photo.jpg"), null);
   assert.equal(await readMedia("storage-expired-photo.original"), null);
   assert.equal(await readMedia("storage-expired-print.jpg"), null);
-  assert.ok(await readMedia(phonePrint.file), "Giữ nguyên tờ in mới của khách");
+  assert.ok(await readMedia(sent.file), "Giữ nguyên tờ in mới của khách");
   const keptAlbum = await Booking.findById(booking._id);
-  assert.equal(keptAlbum.photos.length, 4, "Giữ nguyên bốn ảnh còn hạn");
-  assert.ok(await PrintJob.findById(phonePrint._id));
+  assert.equal(keptAlbum.photos.length, 2, "Giữ nguyên hai ảnh còn hạn");
+  assert.ok(keptAlbum.composite?.file, "Giữ nguyên ảnh ghép của máy chụp");
+  assert.ok(await readMedia(keptAlbum.composite.file));
+  assert.ok(await PrintJob.findById(sent._id));
 
-  // ── Quản trị trên điện thoại: menu gọn, bảng vé dạng thẻ ──
+  // ── Quản trị trên điện thoại: menu gọn, đơn hàng dạng thẻ ──
   await admin.setViewportSize({ width: 390, height: 844 });
   await admin
     .getByRole("button", { name: "Menu quản lý", exact: true })
     .click();
-  await admin
-    .getByRole("button", { name: "Mã chụp & khách tại quầy", exact: true })
-    .click();
-  await admin.locator(".booking-table tbody tr").first().waitFor();
+  await menu(admin, "Đơn hàng").click();
+  await admin.locator("article.order-card").first().waitFor();
   await noOverflow(admin);
   assert.equal(
     await admin
@@ -805,9 +742,9 @@ try {
   );
   assert.equal(
     await admin
-      .locator(".booking-table tbody tr")
+      .locator("article.order-card")
       .first()
-      .evaluate((row) => getComputedStyle(row).display),
+      .evaluate((card) => getComputedStyle(card).display),
     "grid",
   );
   if (process.env.UI_SCREENSHOTS) {
@@ -825,7 +762,7 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: web nội bộ (/ → quản trị, không trang công khai) → lễ tân cấp mã (mất phản hồi không trùng vé) → máy chụp → khách quét QR ghép khung, gửi in theo số tờ của gói → in 15 × 10 cm (DNP DS-RX1, 6 × 4 inch) một trang → đánh dấu đã in → Trợ lí Minh Dâm đo dung lượng, lưu giới hạn, dọn đúng ảnh hết hạn; không lỗi trình duyệt, không tràn ngang.",
+    "PASS: web nội bộ (/ → quản trị, không trang công khai) → lễ tân tạo phiếu rồi xác nhận đã thu (mất phản hồi không trùng phiếu, không trùng mã) → máy chụp: bấm dây, chụp, chọn ảnh và khung, ghép gửi album, gửi lệnh in → khách quét QR xem / tải ảnh ghép, ảnh gốc, ZIP trên điện thoại → lễ tân xem đơn hàng, in lại → Trợ lí Minh Dâm đo dung lượng, lưu giới hạn, dọn đúng ảnh hết hạn; không lỗi trình duyệt, không tràn ngang.",
   );
 } catch (error) {
   for (const context of browser?.contexts() || [])
@@ -835,7 +772,7 @@ try {
         page.url(),
         (
           await page
-            .locator("main")
+            .locator("body")
             .innerText()
             .catch(() => "")
         ).slice(0, 2500),
