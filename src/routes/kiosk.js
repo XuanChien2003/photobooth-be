@@ -316,7 +316,7 @@ kioskRouter.post("/photo", photoBody, async (req, res) => {
 const videoBody = express.raw({ type: ["video/webm", "video/mp4"], limit: "60mb" });
 kioskRouter.post("/video", videoBody, async (req, res) => {
   if (!Buffer.isBuffer(req.body) || !req.body.length) fail(400, "Video trống.");
-  const { b } = await captureBooking(z.string().parse(req.get("X-Capture-Token")));
+  const { b } = await captureBooking(z.string().parse(req.get("X-Capture-Token")), { authOnly: true });
   const mimeType = req.is("video/mp4") ? "video/mp4" : "video/webm";
   const file = mediaReference(`${crypto.randomUUID()}.${mimeType === "video/mp4" ? "mp4" : "webm"}`);
   await saveMedia(file, req.body, mimeType);
@@ -332,7 +332,7 @@ kioskRouter.post("/video", videoBody, async (req, res) => {
 const compositeBody = express.raw({ type: ["image/jpeg"], limit: "20mb" });
 kioskRouter.post("/composite", compositeBody, async (req, res) => {
   if (!Buffer.isBuffer(req.body) || !req.body.length) fail(400, "Ảnh ghép trống.");
-  const { b } = await captureBooking(z.string().parse(req.get("X-Capture-Token")));
+  const { b } = await captureBooking(z.string().parse(req.get("X-Capture-Token")), { authOnly: true });
   let frameName = "";
   try {
     frameName = decodeURIComponent(req.get("X-Frame-Name") || "").trim().slice(0, 200);
