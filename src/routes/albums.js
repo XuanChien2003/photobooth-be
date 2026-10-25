@@ -4,9 +4,8 @@ import { z } from "zod";
 import { config } from "../config.js";
 import { mediaReference } from "../services/r2.js";
 import { Booking, PrintJob } from "../models/index.js";
-import { appendCapture, renumberPhotoStages } from "../services/capture.js";
+import { appendCapture } from "../services/capture.js";
 import { timed } from "../services/image-save-queue.js";
-import { saveAlbumFavorites } from "../services/album-favorites.js";
 import {
   deleteMedia,
   readMedia,
@@ -96,23 +95,6 @@ albumsRouter.get("/:token/photos/:photo", async (req, res) => {
       ),
   );
   await sendMedia(req, res, photoFile(p, req.query.size), "image/jpeg", photoExpiry(p));
-});
-// ─── Web App của khách: quản lý ảnh gốc, yêu thích, gửi in ───────────────
-
-albumsRouter.put("/:token/favorites", async (req, res) => {
-  const d = z
-    .object({
-      ids: z
-        .array(id.transform((photo) => photo.toLowerCase()))
-        .refine(
-          (ids) => new Set(ids).size === ids.length,
-          "Danh sách ảnh bị trùng. Vui lòng tải lại trang.",
-        ),
-    })
-    .parse(req.body);
-  const b = await album(req);
-  requireMedia(b);
-  res.json(await albumBooking(await saveAlbumFavorites(b, d.ids)));
 });
 // Video tua nhanh của lượt chụp: xem trong album (hỗ trợ tua) hoặc tải về (?download=1).
 albumsRouter.get("/:token/video", async (req, res) => {
@@ -342,21 +324,4 @@ albumsRouter.post("/:token/photos", photoBody, async (req, res) => {
       preview: d.preview, storedOriginal: storedOriginal(b._id, d) },
   ));
   res.status(201).json(await albumBooking(saved));
-});
-albumsRouter.delete("/:token/photos", async (req, res) => {
-  const ids = [...new Set(z.array(id).parse(req.body.ids))].map((photo) => new mongoose.Types.ObjectId(photo));
-  const b = await album(req, { status: 1, captureEndsAt: 1 });
-  if (b.status !== "completed") fail(409, "Phiên chụp chưa hoàn thành.");
-  // Hide the photos and close the gaps in their numbers in one atomic update (no lost photo
-  // when a phone upload commits at the same moment).
-  await Booking.updateOne({ _id: b._id, status: "completed" }, [
-    { $set: { photos: { $map: {
-      input: { $ifNull: ["$photos", []] },
-      as: "p",
-      in: { $cond: [{ $in: ["$$p._id", ids] },
-        { $mergeObjects: ["$$p", { deleted: true, favorite: false }] }, "$$p"] },
-    } } } },
-    ...renumberPhotoStages(),
-  ]);
-  res.json(await albumBooking(await album(req)));
 });

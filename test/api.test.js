@@ -981,13 +981,9 @@ test("self-booth: timed session, numbered photos, idempotent uploads, timeout an
   void d;
 });
 
-test("web app: favorites, bulk delete, upload, zip and multi-sheet print reach the admin queue", async () => {
+test("web app: upload, zip and multi-sheet print reach the admin queue", async () => {
   const { b, session } = await startSession();
   const token = session.accessToken;
-  await request(app)
-    .put(`/api/albums/${token}/favorites`)
-    .send({ ids: [] })
-    .expect(409);
   await request(app)
     .post("/api/kiosk/start")
     .send({ captureToken: session.captureToken })
@@ -1001,46 +997,11 @@ test("web app: favorites, bulk delete, upload, zip and multi-sheet print reach t
         clientKey: `web-shot-${i}`,
       })
       .expect(200);
-  const { body: done } = await request(app)
+  await request(app)
     .post("/api/kiosk/finish")
     .send({ captureToken: session.captureToken })
     .expect(200);
-  const [first, second, third] = done.photos;
 
-  const fav = await request(app)
-    .put(`/api/albums/${token}/favorites`)
-    .send({ ids: [first.id, third.id] })
-    .expect(200);
-  assert.deepEqual(
-    fav.body.photos.map((p) => p.favorite),
-    [true, false, true],
-  );
-  await request(app)
-    .put(`/api/albums/${token}/favorites`)
-    .send({ ids: [first.id, first.id] })
-    .expect(400);
-  const unavailable = await request(app)
-    .put(`/api/albums/${token}/favorites`)
-    .send({
-      ids: Array.from({ length: 11 }, () =>
-        new mongoose.Types.ObjectId().toString(),
-      ),
-    })
-    .expect(400);
-  assert.equal(
-    unavailable.body.message,
-    "Ảnh được chọn không còn trong album hoặc đã hết hạn lưu trữ.",
-  );
-
-  const removed = await request(app)
-    .delete(`/api/albums/${token}/photos`)
-    .send({ ids: [second.id] })
-    .expect(200);
-  // Numbers close up after a delete: the old #03 becomes #02.
-  assert.deepEqual(
-    removed.body.photos.map((p) => p.number),
-    [1, 2],
-  );
   const uploaded = await request(app)
     .post(`/api/albums/${token}/photos`)
     .send({
@@ -1049,17 +1010,14 @@ test("web app: favorites, bulk delete, upload, zip and multi-sheet print reach t
       name: "phone.jpg",
     })
     .expect(201);
-  assert.equal(uploaded.body.photos.length, 3);
-  assert.deepEqual(uploaded.body.photos.map((p) => p.number), [1, 2, 3]);
-  // Delete the newest photo and add another: it takes the same number again.
-  const newest = uploaded.body.photos.at(-1).id;
-  await request(app).delete(`/api/albums/${token}/photos`).send({ ids: [newest] }).expect(200);
-  const refilled = await request(app)
-    .post(`/api/albums/${token}/photos`)
-    .send({ image: await jpeg(50, 40, "#00ccff"), clientKey: "upload-0002", name: "again.jpg" })
-    .expect(201);
-  assert.deepEqual(refilled.body.photos.map((p) => p.number), [1, 2, 3]);
-  assert.notEqual(refilled.body.photos.at(-1).id, newest);
+  assert.deepEqual(uploaded.body.photos.map((p) => p.number), [1, 2, 3, 4]);
+  // The album is read-only for guests now: no favorites, no deleting photos.
+  assert.equal(uploaded.body.photos.some((p) => "favorite" in p), false);
+  await request(app).put(`/api/albums/${token}/favorites`).send({ ids: [] }).expect(404);
+  await request(app)
+    .delete(`/api/albums/${token}/photos`)
+    .send({ ids: [uploaded.body.photos[0].id] })
+    .expect(404);
 
   const zip = await request(app)
     .get(`/api/albums/${token}/download`)
@@ -1072,7 +1030,7 @@ test("web app: favorites, bulk delete, upload, zip and multi-sheet print reach t
     .expect(200)
     .expect("Content-Type", /zip/);
   assert.equal(zip.body.readUInt32LE(0), 0x04034b50);
-  assert.equal(zip.body.readUInt16LE(zip.body.length - 12), 3);
+  assert.equal(zip.body.readUInt16LE(zip.body.length - 12), 4);
 
   const received = [];
   printEvents.on("print", (job) => received.push(job));

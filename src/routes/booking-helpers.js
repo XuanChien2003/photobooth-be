@@ -17,7 +17,6 @@ export const publicBooking = (b) => ({
       number: p.number || i + 1,
       id: p._id,
       kind: p.kind,
-      favorite: Boolean(p.favorite),
       // Mỗi ảnh lưu 24 giờ kể từ lúc chụp.
       expiresAt: photoExpiry(p),
       // Máy chụp ghép ảnh "đang lưu" với ảnh đã lưu (không nạp lại ảnh đang hiện).

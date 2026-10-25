@@ -64,7 +64,7 @@ const bookingSchema = new Schema(
         printFile: String,
         originalName: String,
         kind: String,
-        favorite: Boolean,
+        // Set on photos guests deleted while the album could still do that; kept so old albums read the same.
         deleted: Boolean,
         number: Number,
         clientKey: String,

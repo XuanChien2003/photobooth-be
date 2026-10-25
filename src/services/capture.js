@@ -222,7 +222,6 @@ export function appendCapture(
         thumbnailFile: media.thumbnailFile,
         previewFile: media.previewFile,
         kind: "original",
-        favorite: false,
         ...(clientKey && { clientKey }),
         mirrored: Boolean(mirrored),
         sourcePreserved: media.sourcePreserved,

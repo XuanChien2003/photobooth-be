@@ -263,7 +263,6 @@ export const openapi = {
         id: objectId,
         number: int("Số thứ tự ảnh (#01, #02…)"),
         kind: str("Loại ảnh", { example: "original" }),
-        favorite: bool("Khách đã thả tim"),
         clientKey: str("Mã máy chụp gắn cho ảnh (chống gửi trùng)"),
         expiresAt: str("Ảnh tự xóa lúc này (24 giờ sau khi chụp)", {
           format: "date-time",
@@ -1267,7 +1266,7 @@ export const openapi = {
     "/api/albums/{token}/photos": {
       post: {
         tags: ["Album khách"],
-        summary: "Khách tải thêm ảnh lên album (sau khi chụp xong)",
+        summary: "Máy chụp gửi bổ sung ảnh vào album (ảnh còn kẹt do mất mạng, gửi sau khi chụp xong)",
         description: "Ưu tiên gửi file JPEG/PNG/WebP trực tiếp (tối đa 40 MB) với X-Photo-Key, X-Photo-Name; JSON base64 cũ vẫn được hỗ trợ.",
         parameters: [tokenParam, ...photoHeaders()],
         requestBody: photoBody(
@@ -1280,33 +1279,6 @@ export const openapi = {
         ),
         responses: {
           ...ok("Đã thêm", ref("Booking"), 201),
-          ...errors(400, 404, 409),
-        },
-      },
-      delete: {
-        tags: ["Album khách"],
-        summary: "Xóa nhiều ảnh",
-        parameters: [tokenParam],
-        requestBody: body({ ids: { type: "array", items: objectId } }, ["ids"]),
-        responses: {
-          ...ok("Đã xóa", ref("Booking")),
-          ...errors(400, 404, 409),
-        },
-      },
-    },
-    "/api/albums/{token}/favorites": {
-      put: {
-        tags: ["Album khách"],
-        summary: "Chọn ảnh yêu thích trong album",
-        description:
-          "Có thể chọn mọi ảnh gốc còn hạn thuộc album, không giới hạn theo số ô hoặc catalog khung. Danh sách phải chứa các ID hợp lệ, không trùng nhau; thay thế nguyên tử toàn bộ lựa chọn trước đó.",
-        parameters: [tokenParam],
-        requestBody: body(
-          { ids: { type: "array", items: objectId, uniqueItems: true } },
-          ["ids"],
-        ),
-        responses: {
-          ...ok("Đã lưu", ref("Booking")),
           ...errors(400, 404, 409),
         },
       },
