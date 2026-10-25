@@ -2,8 +2,8 @@
 
 Code đã hỗ trợ R2 nhưng **mặc định vẫn ghi GridFS**. Liên kết GitHub với Cloudflare
 không tự tạo kho ảnh hoặc cấp khóa R2 cho backend Express. Tạo bucket và cấu hình
-biến môi trường trên **máy chủ backend** (Render hoặc máy chủ đang chạy Photo_BE).
-Không đặt khóa trong Photo_FE, `VITE_*`, GitHub source hay gửi khóa qua chat.
+biến môi trường trên **máy chủ backend** (Render hoặc máy chủ đang chạy photobooth-be).
+Không đặt khóa trong photobooth-fe, `VITE_*`, GitHub source hay gửi khóa qua chat.
 
 ## 1. Tạo kho ảnh riêng
 
@@ -22,7 +22,7 @@ Theo [tài liệu Cloudflare](https://developers.cloudflare.com/r2/api/tokens/),
 
 ## 3. Cấu hình backend
 
-Đặt các biến sau trong Render → dịch vụ **Photo_BE** → Environment, hoặc `.env`
+Đặt các biến sau trong Render → dịch vụ **photobooth-be** → Environment, hoặc `.env`
 của backend khi chạy tại tiệm. Không ghi secret vào `.env.example` hay commit `.env`.
 
 ```dotenv
