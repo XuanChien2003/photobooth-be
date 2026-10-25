@@ -24,7 +24,10 @@ export function errorHandler(err, req, res, next) {
     return res.status(400).json({ message: "Dữ liệu JSON không hợp lệ." });
   if (err instanceof mongoose.Error.CastError)
     return res.status(400).json({ message: "Mã dữ liệu không hợp lệ." });
-  if (!err.status) console.error("Request failed:", err.name);
+  // Lỗi bất ngờ: ghi đường dẫn và stack vào log máy chủ (khách chỉ thấy câu chung bên dưới). Mã dài
+  // trong đường dẫn (mã album 48 ký tự, id) được che để không nằm trong log.
+  if (!err.status)
+    console.error(`Request failed: ${req.method} ${req.originalUrl.split("?")[0].replace(/[0-9a-f]{24,}/gi, ":id")}`, err);
   res.status(err.status || 500).json({
     message: err.status
       ? err.message

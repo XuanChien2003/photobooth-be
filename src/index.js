@@ -59,10 +59,12 @@ try {
       }),
     );
 } catch (e) {
+  // Lỗi có thể ở bước kết nối hoặc ở các bước chuẩn bị dữ liệu sau đó: in đủ lỗi để biết bước nào.
   console.error(
-    "Không thể kết nối MongoDB:",
-    e.name,
-    "— kiểm tra URI, IP allowlist và kết nối mạng.",
+    e.name === "MongooseServerSelectionError"
+      ? "Không thể kết nối MongoDB — kiểm tra URI, IP allowlist và kết nối mạng:"
+      : "Không khởi động được máy chủ:",
+    e,
   );
   process.exit(1);
 }
