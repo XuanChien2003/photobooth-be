@@ -1,19 +1,18 @@
 # Backend — Node.js + Express + MongoDB
 
 `src/app.js` nối các nhóm API; handler nằm trong `src/routes/`, middleware dùng chung trong
-`src/middleware/`. Xem [hướng dẫn tìm file cần sửa](../HUONG_DAN_SUA_CODE.md).
+`src/middleware/`.
 
 API cho hệ thống **nội bộ** của tiệm photobooth: lễ tân cấp mã tại quầy, máy chụp trong phòng
 (kiosk), khách quét QR trên máy chụp để nhận ảnh trên điện thoại, lễ tân in ảnh 10 × 15 cm.
 Không có trang công khai (không đặt lịch, không tra cứu mã vé trên web).
 
-Album khách có thể chọn mọi ảnh gốc còn hạn làm ảnh yêu thích để lọc ảnh trước khi chọn khung,
-không giới hạn theo số ô hay catalog khung. Khung đơn nhận tối đa 40 ô, gồm khung 13/14 ô.
-Việc lưu lựa chọn chỉ nhận ảnh còn hạn thuộc đúng album và cập nhật
-nguyên tử để giữ nguyên các ảnh vừa tải lên đồng thời. Logic ở `src/services/album-favorites.js`.
+Album của khách chỉ để xem và tải: ảnh ghép khung, video tua nhanh, ảnh gốc và ZIP. Chọn ảnh, ghép
+khung và in đều làm ở máy chụp; máy chụp gửi bổ sung ảnh còn kẹt do mất mạng vào album qua
+`POST /api/albums/:token/photos`.
 
 ```bash
-cd Photo_BE
+cd photobooth-be
 npm ci
 # Nếu chưa có .env: sao chép .env.example thành .env và điền cấu hình
 npm run seed
@@ -105,13 +104,13 @@ và dọn cùng ảnh gốc khi hết hạn. Liên kết R2 trực tiếp (`?dir
 2 phút nên giống hệt nhau trong khung đó: trình duyệt dùng lại ảnh và chuyển hướng đã lưu
 (`Cache-Control: private, max-age` tới trước khi liên kết hết hạn, tối đa 5 phút, không quá hạn ảnh).
 Phản hồi album kèm luôn link thumbnail/preview/nguồn in/ảnh gốc của từng ảnh (`photos[].links`, đúng các
-URL trên trong cùng khung 2 phút): thư viện mở 60 ảnh tải thẳng từ R2, không cần 60 lượt hỏi Render; trình
-chỉnh và bước ghép tờ in cũng không phải hỏi Render cho từng ô. Phản hồi album là `private, no-cache` có
+URL trên trong cùng khung 2 phút): trang album mở nhiều ảnh tải thẳng từ R2, không cần một lượt hỏi Render
+cho từng ảnh. Phản hồi album là `private, no-cache` có
 ETag: trong cùng khung, lần web hỏi lại chỉ nhận 304 rỗng. Link được ký bằng
 HMAC (`src/services/r2-presign.js`, ~0,05 ms/link, khớp từng byte với AWS SDK — test so sánh) và nhớ
 theo khung, nên mỗi lần web hỏi lại album gần như không tốn CPU. Link hết hạn thì web dùng lại `?direct=1`.
 Ghi R2 thất bại không tự chuyển sang GridFS. Thiếu cấu hình R2 khi chọn provider=r2 thì không khởi động.
-**Ảnh gốc máy chụp và ảnh JPEG khách thêm từ điện thoại đi thẳng lên R2** (không qua Render) khi bucket
+**Ảnh gốc máy chụp (kể cả ảnh gửi bổ sung vào album) đi thẳng lên R2** (không qua Render) khi bucket
 cho phép PUT — xem R2_SETUP.md mục 7. Đo thật ngày 17/10/2026 (ảnh 26 MP 14,7 MB, album thử đã xóa): qua
 Render mất ~27–29 giây tới khi "đã lưu" (riêng đẩy 15 MB qua proxy web tới Render ~23 giây), thẳng R2 ~5 giây
 (xin URL 0,4 s + tải lên R2 2,3 s + xác nhận 2,5 s);
@@ -179,15 +178,28 @@ có thể khác do metadata/index và cách quản lý lưu trữ. API xem thố
 Các file liên quan: `src/services/media-storage.js`, `src/routes/admin/storage.js`,
 `src/services/media.js` (TTL chung), `src/openapi.js`, `test/storage.test.js`.
 
-## Thiết bị ở tiệm (chỉ máy Windows)
+## Thiết bị ở tiệm (máy Windows hoặc Mac)
 
 - Máy in của tiệm: **DNP DS-RX1**, giấy **PR (4x6)** = ảnh 15 × 10 cm (152 × 102 mm).
-- `DNP_PRINTER_NAME`: tên máy in trong Windows (vd. `DS-RX1`) → lệnh in của khách tự gửi tới máy in
-  (`scripts/print-dnp.ps1` chọn khổ 4x6 của driver, tờ khác chiều với giấy tự xoay). Để trống (máy chủ chạy trên
-  Render) thì lễ tân in từ "Hàng chờ in" → “In 15×10”: trang in đúng 6 × 4 inch, chọn máy DS-RX1, khổ PR (4x6),
-  tỉ lệ 100%, lề Không có. Nút tải của lệnh in nhiều tờ tải một tệp ZIP đủ các tờ.
+- In tự động (máy chủ trên Render): máy chụp bấm "In ảnh" → lệnh in lên máy chủ → **print agent** chạy trên
+  máy cắm DNP tự nhận lệnh và in. Windows: `scripts/print-dnp.ps1` chọn khổ 4x6 của driver. Mac:
+  `scripts/print-cups.js` in qua CUPS (`lp`), chọn khổ 4x6 trong PageSize của driver (hàng in đã đặt sẵn khổ
+  4x6 / 2inch cut thì giữ). Tờ khác chiều với khổ giấy tự xoay.
+  1. Trên Render đặt `PRINT_AGENT_TOKEN` (chuỗi ngẫu nhiên ≥ 32 ký tự).
+  2. Trên máy ở tiệm: cài Node.js 20+ (Mac: thêm driver DNP DS-RX1 cho Mac và thêm máy in trong Cài đặt hệ
+     thống → Máy in & Máy quét), chép thư mục `photobooth-be`, tạo `.env` với `PRINT_AGENT_API_URL`
+     (vd. `https://photobooth.ngathanh.workers.dev`), `PRINT_AGENT_BRANCH` (đúng tên chi nhánh của máy chụp),
+     `PRINT_AGENT_TOKEN` (giống Render), `DNP_PRINTER_NAME` (Windows: tên máy in, vd. `DS-RX1`; Mac: tên hàng
+     in CUPS — gõ `lpstat -e` trong Terminal, vd. `DS_RX1`) và `DNP_STRIP_PRINTER_NAME` (hàng in thứ hai của cùng
+     máy, driver bật 2inch cut — cho khung nhỏ 2 dải; để trống thì in qua hàng chính và tự cắt).
+  3. Windows: bấm đúp `scripts/print-agent.cmd` (đặt lối tắt vào `shell:startup` để tự chạy khi bật máy).
+     Mac: bấm đúp `scripts/print-agent.command` (lần đầu báo không có quyền chạy thì gõ
+     `chmod +x scripts/print-agent.command` trong Terminal; thêm vào Mục đăng nhập để tự chạy khi bật máy).
+  Máy chụp báo trạng thái thật: chờ máy in nhận lệnh / đang in / lỗi; quá 20 giây chưa nhận lệnh thì báo nhân viên.
+- `DNP_PRINTER_NAME` trên chính máy chủ (khi máy chủ chạy ngay trên máy Windows cắm DNP) cũng in tự động không cần
+  print agent. Không bật cách nào thì in lại từ trang Đơn hàng → "Tải ảnh" / "In ảnh".
 
-Tùy chọn phục vụ cả frontend đã build: đặt `FRONTEND_DIST=../Photo_FE/dist` và
+Tùy chọn phục vụ cả frontend đã build: đặt `FRONTEND_DIST=../photobooth-fe/dist` và
 `CLIENT_URL=http://localhost:8080` trong `.env` rồi khởi động lại.
 
 ## Kiểm thử
@@ -195,7 +207,7 @@ Tùy chọn phục vụ cả frontend đã build: đặt `FRONTEND_DIST=../Photo
 ```bash
 npm test                      # API (MongoDB tạm)
 npx playwright install chromium
-npm run test:browser          # toàn luồng trên trình duyệt, cần build trước: cd ../Photo_FE && npm run build
+npm run test:browser          # toàn luồng trên trình duyệt, cần build trước: cd ../photobooth-fe && npm run build
 ```
 
 Các bài test dùng MongoDB tạm, không đụng dữ liệu thật và luôn tắt máy in

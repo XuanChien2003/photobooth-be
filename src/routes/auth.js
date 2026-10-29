@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { config } from "../config.js";
 import { User } from "../models/index.js";
-import { auth, setSession } from "../middleware/auth.js";
+import { auth, permissionsOf, setSession } from "../middleware/auth.js";
 import { sensitive } from "../middleware/rate-limits.js";
 import { fail } from "./validation.js";
 
@@ -20,12 +20,12 @@ authRouter.post("/login", sensitive(), async (req, res) => {
   if (!user || !(await bcrypt.compare(d.password, user.password)))
     fail(401, "Email hoặc mật khẩu không đúng.");
   setSession(res, user);
-  res.json({ name: user.name, email: user.email, role: user.role });
+  res.json({ name: user.name, email: user.email, role: user.role, branch: user.branch || "", permissions: permissionsOf(user) });
 });
 authRouter.get("/me", auth, (req, res) => {
   // Chỉ thông tin tài khoản — không gửi mức lương về trình duyệt.
-  const { _id, name, email, role, active } = req.user;
-  res.json({ _id, name, email, role, active });
+  const { _id, name, email, role, active, branch } = req.user;
+  res.json({ _id, name, email, role, active, branch: branch || "", permissions: permissionsOf(req.user) });
 });
 authRouter.post("/logout", (req, res) => {
   res.clearCookie("session", {

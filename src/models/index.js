@@ -5,3 +5,7 @@ export { default as Frame } from "./Frame.js";
 export { default as Setting } from "./Setting.js";
 export { default as Booking } from "./Booking.js";
 export { default as PrintJob } from "./PrintJob.js";
+export { default as KioskAttempt } from "./KioskAttempt.js";
+export { default as Shift } from "./Shift.js";
+export { default as Sticker } from "./Sticker.js";
+export { default as Screen } from "./Screen.js";

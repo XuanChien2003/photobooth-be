@@ -3,11 +3,20 @@ import mongoose from "mongoose";
 import swaggerUi from "swagger-ui-express";
 import { config } from "../config.js";
 import { openapi } from "../openapi.js";
-import { Room, Package, Frame, Setting } from "../models/index.js";
+import { Room, Package, Frame, Screen, Setting, Sticker } from "../models/index.js";
 import { captureStatus } from "../services/capture.js";
 import { id } from "./validation.js";
-import { frameListItem, hashImage } from "../services/frame-image.js";
+import {
+  ensureFrameThumb,
+  ensureStickerThumb,
+  FRAME_LIST_FIELDS,
+  frameListItem,
+  hashImage,
+  STICKER_LIST_FIELDS,
+  stickerListItem,
+} from "../services/frame-image.js";
 import { catalogCache } from "../services/read-cache.js";
+import { screenListItem } from "./admin/studio.js";
 
 export const publicRouter = Router();
 
@@ -68,12 +77,42 @@ function sendDataImage(req, res, dataUrl) {
   return true;
 }
 // Cả khung đang tắt cũng có ảnh (trang quản trị xem danh sách khung đã tắt).
+// ?size=thumb: ảnh xem nhanh WebP (bộ chọn chủ đề, danh sách khung); chưa có thì tạo một lần.
 publicRouter.get("/frames/:id/image", async (req, res) => {
-  const frame = await Frame.findById(id.parse(req.params.id))
+  const frameId = id.parse(req.params.id);
+  if (req.query.size === "thumb") {
+    const thumb = await ensureFrameThumb(frameId).catch(() => null);
+    if (thumb && sendDataImage(req, res, thumb)) return;
+  }
+  const frame = await Frame.findById(frameId)
     .select("image")
     .lean();
   if (!sendDataImage(req, res, frame?.image))
     res.status(404).json({ message: "Không tìm thấy ảnh khung." });
+});
+publicRouter.get("/stickers/:id/image", async (req, res) => {
+  const stickerId = id.parse(req.params.id);
+  if (req.query.size === "thumb") {
+    const thumb = await ensureStickerThumb(stickerId).catch(() => null);
+    if (thumb && sendDataImage(req, res, thumb)) return;
+  }
+  const sticker = await Sticker.findById(stickerId).select("image").lean();
+  if (!sendDataImage(req, res, sticker?.image))
+    res.status(404).json({ message: "Không tìm thấy ảnh nhãn dán." });
+});
+publicRouter.get("/screens/:id/images/:imageId", async (req, res) => {
+  const imageId = id.parse(req.params.imageId);
+  const screen = await Screen.findOne(
+    { _id: id.parse(req.params.id) },
+    { images: { $elemMatch: { _id: imageId } } },
+  ).lean();
+  if (!sendDataImage(req, res, screen?.images?.[0]?.data))
+    res.status(404).json({ message: "Không tìm thấy ảnh màn hình chờ." });
+});
+publicRouter.get("/studio/kiosk-idle", async (req, res) => {
+  const setting = await Setting.findOne({ key: "studio" }).lean();
+  if (!sendDataImage(req, res, setting?.value?.kiosk?.idleImage))
+    res.status(404).json({ message: "Chưa có ảnh màn hình chờ." });
 });
 publicRouter.get("/studio/qr", async (req, res) => {
   const setting = await Setting.findOne({ key: "studio" }).lean();
@@ -85,21 +124,30 @@ publicRouter.get("/catalog", async (req, res) => {
   res.json(await catalogCache.get("catalog", buildCatalog));
 });
 async function buildCatalog() {
-  const [rooms, packages, frames, setting] = await Promise.all([
-    Room.find({ active: true }).lean(),
+  const [rooms, packages, frames, setting, stickers, screens] = await Promise.all([
+    Room.find({ active: true }).select("-lastSeenAt").lean(),
     Package.find({ active: true }).sort({ price: 1 }).lean(),
     Frame.find({ active: true, "slots.0": { $exists: true } })
-      .select("-image")
+      .select(FRAME_LIST_FIELDS)
       .lean(),
     Setting.findOne({ key: "studio" }).lean(),
+    Sticker.find({ active: true }).select(STICKER_LIST_FIELDS).sort({ order: 1, createdAt: 1 }).lean(),
+    Screen.find({ active: true }).select("-images.data").lean(),
   ]);
   const settings = { ...setting?.value };
   if (settings.bankQrImage?.startsWith("data:"))
     settings.bankQrImage = `/api/studio/qr?v=${hashImage(settings.bankQrImage)}`;
+  if (settings.kiosk?.idleImage?.startsWith("data:"))
+    settings.kiosk = { ...settings.kiosk,
+      idleImage: `/api/studio/kiosk-idle?v=${hashImage(settings.kiosk.idleImage)}` };
+  // Chủ đề đang tắt (Thiết lập → Chủ đề): khách không thấy các khung của chủ đề đó.
+  const hidden = new Set((settings.themes || []).filter((t) => t.active === false).map((t) => t.name));
   return {
     rooms,
     packages,
-    frames: frames.map(frameListItem),
+    frames: frames.filter((f) => !hidden.has(f.themeName?.trim())).map(frameListItem),
+    screens: screens.map(screenListItem),
+    stickers: stickers.map(stickerListItem),
     settings,
     devices: captureStatus(),
   };

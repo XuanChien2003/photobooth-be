@@ -1,12 +1,13 @@
 import { Booking } from "../models/index.js";
 import { MEDIA_TTL_MS } from "../services/media.js";
+import { printExtension } from "../services/print-image.js";
 
 export const quotaMessage = (quota, used) =>
   used < quota
     ? `Vé của bạn còn ${quota - used}/${quota} tờ in. Hãy bỏ bớt tờ, hoặc mua thêm tờ in tại quầy.`
     : `Vé đã dùng hết ${quota} tờ in. Muốn in thêm, bạn mua thêm tờ tại quầy nhé.`;
 // Giữ chỗ n tờ in trong một lệnh ghi duy nhất: 2 lần bấm "Gửi in" cùng lúc không vượt số tờ của vé.
-export const reserveSheets = (b, n) =>
+export const reserveSheets = (b, n, frameName = "") =>
   Booking.findOneAndUpdate(
     {
       _id: b._id,
@@ -17,7 +18,7 @@ export const reserveSheets = (b, n) =>
         ],
       },
     },
-    { $inc: { printSheets: n } },
+    { $inc: { printSheets: n }, ...(frameName && { $set: { frameName } }) },
     { new: true },
   );
 export const releaseSheets = (bookingId, n) =>
@@ -39,6 +40,8 @@ export const publicJob = (job, accessToken) => ({
   copies: job.copies,
   frameName: job.frameName,
   sheetCount: job.sheets?.length || 1,
+  // Định dạng tờ in (png / jpg): nút "Tải ảnh final" ghi đúng loại tệp.
+  format: printExtension(job.sheets?.[0]?.file || job.file || ""),
   spoolStatus: job.spoolStatus,
   spoolMessage: job.spoolMessage,
   width: job.width,

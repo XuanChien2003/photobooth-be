@@ -1,0 +1,2 @@
+# Script chạy trên Mac phải giữ xuống dòng LF (CRLF làm bash báo lỗi khi chép thư mục từ Windows sang).
+*.command text eol=lf

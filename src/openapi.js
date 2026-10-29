@@ -108,6 +108,7 @@ const resources = {
   rooms: ["phòng chụp", "Room"],
   packages: ["gói chụp", "Package"],
   frames: ["khung ảnh", "Frame"],
+  stickers: ["sticker", "Sticker"],
   users: ["tài khoản nhân viên", "UserInput"],
 };
 const resourcePaths = Object.fromEntries(
@@ -123,7 +124,7 @@ const resourcePaths = Object.fromEntries(
               ? "Lễ tân (staff) xem phòng đang hoạt động để mở kiosk; quản trị xem tất cả phòng, gồm phòng đã tắt. Cần đăng nhập."
               : route === "frames"
                 ? adminOnly +
-                  " Danh sách không kèm ảnh base64: image là địa chỉ ảnh (/api/frames/{id}/image?v=…) để cache; lấy đủ ảnh của một khung bằng GET /api/admin/frames/{id}."
+                  " Danh sách không kèm ảnh base64: image là địa chỉ ảnh (/api/frames/{id}/image?v=…) để cache, thumb là ảnh xem nhanh (…&size=thumb); lấy đủ ảnh của một khung bằng GET /api/admin/frames/{id}."
                 : adminOnly,
           security: loggedIn,
           responses: {
@@ -165,7 +166,8 @@ const resourcePaths = Object.fromEntries(
         delete: {
           tags: ["Danh mục & cài đặt"],
           summary:
-            route === "frames" ? "Xóa khung ảnh" : `Tắt ${label} (không xóa)`,
+            route === "frames" ? "Xóa khung ảnh"
+              : route === "stickers" ? "Xóa sticker" : `Tắt ${label} (không xóa)`,
           description: adminOnly,
           security: loggedIn,
           responses: {
@@ -261,7 +263,6 @@ export const openapi = {
         id: objectId,
         number: int("Số thứ tự ảnh (#01, #02…)"),
         kind: str("Loại ảnh", { example: "original" }),
-        favorite: bool("Khách đã thả tim"),
         clientKey: str("Mã máy chụp gắn cho ảnh (chống gửi trùng)"),
         expiresAt: str("Ảnh tự xóa lúc này (24 giờ sau khi chụp)", {
           format: "date-time",
@@ -282,6 +283,13 @@ export const openapi = {
       Booking: object({
         _id: objectId,
         code: str("Mã vé 6 số", { example: "740787" }),
+        branch: str("Chi nhánh áp dụng cho mã chụp"),
+        paid: bool("Đã xác nhận thu tiền"),
+        paidAt: str("Thời điểm xác nhận thu tiền", { format: "date-time" }),
+        codeExpiresAt: str("Mã chụp hết hạn sau hai giờ kể từ paidAt", { format: "date-time" }),
+        shots: int("Số ảnh được chụp của gói tại lúc bán"),
+        countdownSeconds: int("Giây đếm ngược trước mỗi ảnh"),
+        printSize: enumOf(["full", "strip"]),
         name: { type: "string" },
         phone: { type: "string" },
         status: enumOf(
@@ -291,7 +299,7 @@ export const openapi = {
         packageName: { type: "string" },
         roomName: { type: "string" },
         date: str("Ngày cấp (giờ Việt Nam)", { example: "2026-10-06" }),
-        total: int("Tổng tiền (VND) — chỉ admin thấy"),
+        total: int("Tổng tiền phiếu (VND); nhân viên thấy để thu tiền"),
         paymentMethod: enumOf(["cash", "transfer"]),
         prints: int("Số tờ 10 × 15 cm được in"),
         printSheets: int("Số tờ đã gửi in"),
@@ -341,6 +349,11 @@ export const openapi = {
           name: str("Tên phòng", { example: "Room 01" }),
           description: { type: "string", example: "" },
           branch: str("Chi nhánh", { example: "NXC" }),
+          machineCode: str("Mã máy"),
+          model: str("Dòng máy"),
+          flip: enumOf(["device", "on", "off"], "Chế độ lật ảnh: theo máy / luôn lật / không lật"),
+          payment: enumOf(["counter", "cash"], "Trả tiền: mua mã ở quầy / đút tiền tại máy"),
+          paymentTest: bool("Chế độ thử: có nút bỏ qua trả tiền"),
           active: { type: "boolean", example: true },
         },
         ["name", "description", "branch", "active"],
@@ -351,7 +364,12 @@ export const openapi = {
           description: { type: "string", example: "5 phút, 1 tờ in" },
           price: int("Giá (VND)", { example: 60000 }),
           duration: int("Thời gian chụp (phút, 1–30)", { example: 5 }),
+          shots: int("Số ảnh bắt buộc chụp (1–40)", { example: 12 }),
+          countdownSeconds: int("Giây đếm ngược trước mỗi ảnh (1–30)", { example: 10 }),
+          selectCount: int("Số ảnh khách chọn để ghép khung trên máy chụp (1–12)", { example: 4 }),
+          printSize: enumOf(["full", "strip"]),
           prints: int("Số tờ in kèm gói (0–20)", { example: 1 }),
+          branches: { type: "array", items: { type: "string" }, description: "Chi nhánh áp dụng; để trống = mọi chi nhánh" },
           active: { type: "boolean", example: true },
         },
         ["name", "description", "price", "duration", "prints", "active"],
@@ -380,15 +398,42 @@ export const openapi = {
         },
         ["name", "image", "slots", "active"],
       ),
+      Sticker: object(
+        {
+          name: { type: "string", example: "Ngôi sao" },
+          order: { type: "integer", example: 0 },
+          image: str("Ảnh PNG/WebP nền trong suốt dạng data URL (≤ 500 KB)"),
+          active: { type: "boolean", example: true },
+        },
+        ["name", "image", "active"],
+      ),
       UserInput: object(
         {
           name: { type: "string", example: "Lễ tân Mai" },
           email: { type: "string", format: "email", example: "mai@nxc.local" },
           password: str("Bắt buộc khi tạo mới (≥ 10 ký tự); bỏ trống khi sửa"),
           role: enumOf(["admin", "staff"]),
+          branch: str("Chi nhánh (bắt buộc với nhân viên)"),
+          permissions: {
+            type: "array",
+            description: "Quyền của nhân viên; bỏ trống để giữ quyền đang có.",
+            items: enumOf(["revenue:view", "orders:export", "orders:cancel", "print:operate", "shift:operate", "rooms:setup"]),
+          },
           active: { type: "boolean", example: true },
         },
         ["name", "email", "role", "active"],
+      ),
+      ScreenInput: object(
+        {
+          name: str("Tên cấu hình (cấu hình riêng)"),
+          rooms: { type: "array", items: objectId, description: "Máy áp dụng (cấu hình riêng)" },
+          title: str("Dòng chữ lớn"),
+          subtitle: str("Dòng chữ nhỏ"),
+          interval: int("Số giây mỗi ảnh (2–60)"),
+          images: { type: "array", items: { type: "object" }, description: "{ _id } giữ ảnh cũ hoặc { data } ảnh mới (≤ 6 ảnh)" },
+          active: bool("Đang dùng"),
+        },
+        ["images"],
       ),
       Settings: object(
         {
@@ -572,10 +617,13 @@ export const openapi = {
         tags: ["Hệ thống"],
         summary: "Ảnh khung đang hoạt động (PNG/JPG/WebP, công khai)",
         description:
-          "Có ?v=… (lấy từ /api/catalog) thì cache 1 năm; đổi ảnh khung thì v đổi nên tự tải lại.",
+          "Có ?v=… (lấy từ /api/catalog) thì cache 1 năm; đổi ảnh khung thì v đổi nên tự tải lại. " +
+          "?size=thumb trả ảnh xem nhanh WebP cạnh dài 720 px (frames[].thumb) cho bộ chọn chủ đề / danh sách; " +
+          "khung cũ chưa có thì tạo một lần, ảnh không đọc được thì trả ảnh gốc. Ghép ảnh và in luôn dùng ảnh gốc.",
         parameters: [
           pathParam("id", "Mã khung"),
           query("v", "Phiên bản ảnh (từ /api/catalog)", { type: "string" }),
+          query("size", "thumb: ảnh xem nhanh WebP", { type: "string", enum: ["thumb"] }),
         ],
         responses: {
           200: {
@@ -584,6 +632,71 @@ export const openapi = {
               "image/png": { schema: { type: "string", format: "binary" } },
             },
           },
+          ...errors(404),
+        },
+      },
+    },
+    "/api/albums/{token}/video": {
+      get: {
+        tags: ["Album khách"],
+        summary: "Video tua nhanh của lượt chụp (hỗ trợ Range; ?download=1 để tải về)",
+        parameters: [tokenParam, query("download", "1 = tải về máy", { type: "string" })],
+        responses: {
+          200: { description: "Video", content: { "video/mp4": { schema: { type: "string", format: "binary" } } } },
+          ...errors(404),
+        },
+      },
+    },
+    "/api/albums/{token}/composite": {
+      get: {
+        tags: ["Album khách"],
+        summary: "Ảnh đã ghép khung ở máy chụp (?size=thumbnail bản xem nhanh 720 px; ?download=1 để tải về)",
+        parameters: [
+          tokenParam,
+          query("size", "thumbnail: bản xem nhanh", { type: "string", enum: ["thumbnail"] }),
+          query("download", "1 = tải về máy", { type: "string" }),
+        ],
+        responses: {
+          200: { description: "Ảnh JPEG", content: { "image/jpeg": { schema: { type: "string", format: "binary" } } } },
+          ...errors(404),
+        },
+      },
+    },
+    "/api/screens/{id}/images/{imageId}": {
+      get: {
+        tags: ["Hệ thống"],
+        summary: "Ảnh màn hình chờ (công khai)",
+        description: "Có ?v=… (lấy từ /api/catalog) thì cache 1 năm.",
+        parameters: [
+          pathParam("id", "Mã màn hình chờ"),
+          pathParam("imageId", "Mã ảnh"),
+          query("v", "Phiên bản ảnh", { type: "string" }),
+        ],
+        responses: {
+          200: { description: "Ảnh", content: { "image/jpeg": { schema: { type: "string", format: "binary" } } } },
+          ...errors(400, 404),
+        },
+      },
+    },
+    "/api/stickers/{id}/image": {
+      get: {
+        tags: ["Hệ thống"],
+        summary: "Ảnh sticker (công khai)",
+        description: "Có ?v=… (lấy từ /api/catalog) thì cache 1 năm.",
+        parameters: [pathParam("id", "Mã sticker"), query("v", "Phiên bản ảnh", { type: "string" })],
+        responses: {
+          200: { description: "Ảnh sticker", content: { "image/png": { schema: { type: "string", format: "binary" } } } },
+          ...errors(404),
+        },
+      },
+    },
+    "/api/studio/kiosk-idle": {
+      get: {
+        tags: ["Hệ thống"],
+        summary: "Ảnh nền màn hình chờ của máy chụp (công khai)",
+        parameters: [query("v", "Phiên bản ảnh", { type: "string" })],
+        responses: {
+          200: { description: "Ảnh nền", content: { "image/jpeg": { schema: { type: "string", format: "binary" } } } },
           ...errors(404),
         },
       },
@@ -668,6 +781,34 @@ export const openapi = {
     },
 
     // ── Quầy & vé ──
+    "/api/admin/tickets/draft": {
+      post: {
+        tags: ["Quầy & vé"],
+        summary: "Tạo phiếu chờ thanh toán, chưa có mã chụp",
+        security: loggedIn,
+        requestBody: body({
+          package: objectId, requestKey: uuid,
+          room: objectId, branch: str("Chi nhánh, dùng khi không chọn phòng"),
+          name: str("Tên khách"), phone: str("Số điện thoại"),
+          expectedTotal: int("Giá đang hiển thị cho thu ngân"),
+        }, ["package", "requestKey"]),
+        responses: { ...ok("Phiếu chưa thanh toán", ref("Booking"), 201), ...errors(400, 401, 403, 409, 429) },
+      },
+    },
+    "/api/admin/tickets/{id}/activate": {
+      patch: {
+        tags: ["Quầy & vé"],
+        summary: "Xác nhận đã thu tiền và cấp mã sáu số dùng một lần",
+        security: loggedIn,
+        parameters: [pathParam("id", "ID phiếu chờ thanh toán")],
+        requestBody: body({
+          paymentReceived: { type: "boolean", enum: [true] },
+          paymentMethod: enumOf(["cash", "transfer"]),
+          expectedTotal: int("Tổng tiền đã thu"),
+        }, ["paymentReceived", "paymentMethod", "expectedTotal"]),
+        responses: { ...ok("Đã cấp mã, hết hạn sau hai giờ", ref("Booking")), ...errors(400, 401, 403, 404, 409) },
+      },
+    },
     "/api/admin/tickets/quote": {
       post: {
         tags: ["Quầy & vé"],
@@ -741,7 +882,7 @@ export const openapi = {
     "/api/admin/bookings": {
       get: {
         tags: ["Quầy & vé"],
-        summary: "Danh sách vé (500 vé mới nhất)",
+        summary: "Danh sách đơn hàng (500 đơn mới nhất)",
         description:
           "Lễ tân không thấy tổng tiền.\n\n**Kiểm tra máy chụp có thấy ảnh máy ảnh không:** nhập `code` = mã vé đang chụp → xem `captureDiag`: `folder` (thư mục đang đọc), `jpegs` (số ảnh JPG thấy trong thư mục), `fresh` / `imported` (ảnh mới trong phiên / đã nhận), `access` (quyền đọc), `error` (lỗi đọc), `at` (lần báo gần nhất — máy chụp báo 2 giây/lần).",
         security: loggedIn,
@@ -751,6 +892,10 @@ export const openapi = {
             type: "string",
             example: "2026-10-06",
           }),
+          query("from", "Từ ngày", { type: "string", example: "2026-10-01" }),
+          query("to", "Đến ngày", { type: "string", example: "2026-10-31" }),
+          query("room", "Tên máy / phòng", { type: "string", example: "Phòng 01" }),
+          query("paymentMethod", "Hình thức thanh toán", enumOf(["cash", "transfer"])),
           query(
             "status",
             "Lọc theo trạng thái",
@@ -821,6 +966,27 @@ export const openapi = {
         },
       },
     },
+    "/api/admin/bookings/{id}/reprint": {
+      post: {
+        tags: ["Quầy & vé"],
+        summary: "In lại file ảnh đã ghép của một đơn hàng",
+        description:
+          "Tạo lệnh in mới từ file còn hạn của lệnh cũ; không trừ thêm hạn mức album.",
+        security: loggedIn,
+        parameters: [pathParam("id", "Mã đơn hàng (_id)")],
+        requestBody: body(
+          {
+            jobId: str("Mã lệnh in nguồn"),
+            copies: int("Số bản (1–20)", { minimum: 1, maximum: 20 }),
+          },
+          ["jobId", "copies"],
+        ),
+        responses: {
+          ...ok("Lệnh in lại đã tạo"),
+          ...errors(400, 401, 404),
+        },
+      },
+    },
     "/api/admin/rooms/live": {
       get: {
         tags: ["Quầy & vé"],
@@ -850,12 +1016,95 @@ export const openapi = {
     },
 
     // ── Máy chụp ──
+    "/api/print-agent/claim": {
+      post: {
+        tags: ["Máy in tại tiệm"],
+        summary: "Máy in tại tiệm (Windows / Mac) nhận một lệnh in thuộc chi nhánh",
+        description: "Dùng Authorization: Bearer PRINT_AGENT_TOKEN; mỗi lệnh được cấp một lease 5 phút.",
+        requestBody: body({ branch: str("Chi nhánh đặt máy in") }, ["branch"]),
+        responses: { ...ok("Lệnh in hoặc job: null"), ...errors(400, 403) },
+      },
+    },
+    "/api/print-agent/jobs/{id}/sheets/{index}": {
+      get: {
+        tags: ["Máy in tại tiệm"],
+        summary: "Tải một tờ in trong lease hiện tại",
+        parameters: [pathParam("id", "ID lệnh in"), pathParam("index", "Số thứ tự tờ", { type: "integer" })],
+        responses: { ...ok("Dữ liệu PNG/JPEG"), ...errors(400, 403, 404) },
+      },
+    },
+    "/api/print-agent/jobs/{id}/complete": {
+      post: {
+        tags: ["Máy in tại tiệm"],
+        summary: "Báo kết quả gửi vào hàng đợi máy in (Windows / CUPS trên Mac)",
+        parameters: [pathParam("id", "ID lệnh in")],
+        requestBody: body({ leaseId: uuid, sent: bool("Đã gửi thành công"), message: str("Lỗi nếu thất bại") }, ["leaseId", "sent"]),
+        responses: { ...ok("Trạng thái spool"), ...errors(400, 403, 409) },
+      },
+    },
+    "/api/kiosk/sale": {
+      post: {
+        tags: ["Máy chụp (kiosk)"],
+        summary: "Khách mua lượt chụp ngay tại máy (đút tiền) hoặc bỏ qua trả tiền ở chế độ thử",
+        description: "Phòng phải bật Thanh toán tại máy (payment = cash) hoặc Chế độ thử (paymentTest, skip = true). " +
+          "bills: các tờ tiền máy nhận tiền đã nhận; tổng phải ≥ giá gói. Gửi lại cùng requestKey trả đúng lượt chụp đã tạo.",
+        requestBody: body({
+          device: str("Mã máy chụp của phòng"),
+          package: str("ID gói chụp"),
+          requestKey: uuid,
+          skip: bool("Bỏ qua trả tiền (chế độ thử, không tính doanh thu)"),
+          bills: { type: "array", items: object({ amount: int("Mệnh giá (VND)"), at: str("Thời điểm nhận (ISO)") }, ["amount"]) },
+        }, ["device", "package", "requestKey"]),
+        responses: { ...ok("Lượt chụp đã mở: { booking, accessToken, captureToken, flip }", { type: "object" }, 201), ...errors(400, 403, 409, 429) },
+      },
+    },
+    "/api/kiosk/video": {
+      post: {
+        tags: ["Máy chụp (kiosk)"],
+        summary: "Gửi video tua nhanh của lượt chụp (thay video cũ nếu gửi lại)",
+        description: "Thân là tệp video/webm hoặc video/mp4 (≤ 60 MB); header X-Capture-Token là mã phiên chụp.",
+        parameters: [{ name: "X-Capture-Token", in: "header", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: true,
+          content: {
+            "video/webm": { schema: { type: "string", format: "binary" } },
+            "video/mp4": { schema: { type: "string", format: "binary" } },
+          },
+        },
+        responses: { ...ok("Đã lưu", { type: "object" }, 201), ...errors(400, 401, 403, 409, 413) },
+      },
+    },
+    "/api/kiosk/composite": {
+      post: {
+        tags: ["Máy chụp (kiosk)"],
+        summary: "Gửi ảnh đã ghép khung của lượt chụp vào album (thay ảnh cũ nếu gửi lại)",
+        description:
+          "Thân là ảnh image/jpeg (≤ 20 MB, cạnh dài ≤ 6000 px) — bản chất lượng in máy chụp ghép sau khi khách chọn khung; " +
+          "khách xem / tải ở /api/albums/{token}/composite kể cả khi gói không kèm tờ in. Header X-Capture-Token là mã phiên " +
+          "chụp, X-Frame-Name (tùy chọn, encodeURIComponent) là tên chủ đề / khung (tính vào xếp hạng chủ đề).",
+        parameters: [
+          { name: "X-Capture-Token", in: "header", required: true, schema: { type: "string" } },
+          { name: "X-Frame-Name", in: "header", required: false, schema: { type: "string" } },
+        ],
+        requestBody: { required: true, content: { "image/jpeg": { schema: { type: "string", format: "binary" } } } },
+        responses: { ...ok("{ ok, width, height }", { type: "object" }, 201), ...errors(400, 401, 403, 409, 413) },
+      },
+    },
+    "/api/kiosk/ping": {
+      post: {
+        tags: ["Máy chụp (kiosk)"],
+        summary: "Máy chụp báo còn mở (mỗi phút), nhận tên phòng và chế độ lật ảnh",
+        requestBody: body({ device: str("Mã máy chụp của phòng") }, ["device"]),
+        responses: { ...ok("{ room: { _id, name, branch, flip } }"), ...errors(400, 403) },
+      },
+    },
     "/api/kiosk/claim": {
       post: {
         tags: ["Máy chụp (kiosk)"],
         summary: "Khách nhập mã vé ở máy chụp",
         description:
-          "`device` lấy từ POST /api/admin/rooms/{id}/device. Vé đã chụp xong thì trả `completed: true` để hiện lại QR.",
+          "`device` lấy từ POST /api/admin/rooms/{id}/device. Vé đã chụp xong thì trả `completed: true` để hiện lại QR. " +
+          "Gói chụp, khổ ảnh và số tờ in lấy từ vé đã thanh toán ở quầy; kiosk không bán thêm.",
         requestBody: body(
           {
             code: str("Mã vé 6 số", { pattern: "^\\d{6}$" }),
@@ -1017,7 +1266,7 @@ export const openapi = {
     "/api/albums/{token}/photos": {
       post: {
         tags: ["Album khách"],
-        summary: "Khách tải thêm ảnh lên album (sau khi chụp xong)",
+        summary: "Máy chụp gửi bổ sung ảnh vào album (ảnh còn kẹt do mất mạng, gửi sau khi chụp xong)",
         description: "Ưu tiên gửi file JPEG/PNG/WebP trực tiếp (tối đa 40 MB) với X-Photo-Key, X-Photo-Name; JSON base64 cũ vẫn được hỗ trợ.",
         parameters: [tokenParam, ...photoHeaders()],
         requestBody: photoBody(
@@ -1030,33 +1279,6 @@ export const openapi = {
         ),
         responses: {
           ...ok("Đã thêm", ref("Booking"), 201),
-          ...errors(400, 404, 409),
-        },
-      },
-      delete: {
-        tags: ["Album khách"],
-        summary: "Xóa nhiều ảnh",
-        parameters: [tokenParam],
-        requestBody: body({ ids: { type: "array", items: objectId } }, ["ids"]),
-        responses: {
-          ...ok("Đã xóa", ref("Booking")),
-          ...errors(400, 404, 409),
-        },
-      },
-    },
-    "/api/albums/{token}/favorites": {
-      put: {
-        tags: ["Album khách"],
-        summary: "Chọn ảnh yêu thích trong album",
-        description:
-          "Có thể chọn mọi ảnh gốc còn hạn thuộc album, không giới hạn theo số ô hoặc catalog khung. Danh sách phải chứa các ID hợp lệ, không trùng nhau; thay thế nguyên tử toàn bộ lựa chọn trước đó.",
-        parameters: [tokenParam],
-        requestBody: body(
-          { ids: { type: "array", items: objectId, uniqueItems: true } },
-          ["ids"],
-        ),
-        responses: {
-          ...ok("Đã lưu", ref("Booking")),
           ...errors(400, 404, 409),
         },
       },
@@ -1330,6 +1552,190 @@ export const openapi = {
           ),
           ...errors(400, 401, 404, 409),
         },
+      },
+    },
+    "/api/admin/settings/kiosk": {
+      put: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Lưu màn hình chờ của máy chụp (Tap to start)",
+        description: adminOnly,
+        security: loggedIn,
+        requestBody: body({
+          idleTitle: str("Dòng chữ lớn, để trống = “Tap to start”"),
+          idleSubtitle: str("Dòng chữ nhỏ bên dưới"),
+          idleImage: str("Ảnh nền PNG/JPG/WebP dạng data URL, \"\" để bỏ ảnh"),
+        }, []),
+        responses: { ...ok("Đã lưu", ref("Settings")), ...errors(400, 401, 403) },
+      },
+    },
+    "/api/admin/shifts": {
+      get: {
+        tags: ["Quầy & vé"],
+        summary: "Ca trực đang mở và 20 ca gần nhất",
+        description: "Lễ tân xem chi nhánh được phân công; quản trị chọn ?branch=.",
+        security: loggedIn,
+        parameters: [query("branch", "Chi nhánh (chỉ quản trị)", { type: "string" })],
+        responses: { ...ok("Ca trực"), ...errors(401, 403) },
+      },
+    },
+    "/api/admin/shifts/open": {
+      post: {
+        tags: ["Quầy & vé"],
+        summary: "Mở ca",
+        description: "Mỗi chi nhánh chỉ một ca đang mở (409 nếu đã có).",
+        security: loggedIn,
+        requestBody: body({
+          branch: str("Chi nhánh (quản trị bắt buộc chọn; lễ tân bỏ qua)"),
+          openingCash: int("Tiền mặt đầu ca (VND)"),
+        }, []),
+        responses: { ...ok("Đã mở ca", { type: "object" }, 201), ...errors(400, 401, 403, 404, 409) },
+      },
+    },
+    "/api/admin/shifts/{id}/close": {
+      post: {
+        tags: ["Quầy & vé"],
+        summary: "Đóng ca",
+        description: "Chốt số vé, tiền mặt và chuyển khoản đã thu trong ca.",
+        security: loggedIn,
+        parameters: [pathParam("id", "Mã ca trực")],
+        requestBody: body({
+          closingCash: int("Tiền mặt đếm được cuối ca (VND)"),
+          note: str("Ghi chú"),
+        }, ["closingCash"]),
+        responses: { ...ok("Đã đóng ca"), ...errors(400, 401, 403, 404) },
+      },
+    },
+    "/api/admin/shifts/report": {
+      get: {
+        tags: ["Quầy & vé"],
+        summary: "Đối soát theo tháng: các ca đã đóng và tiền đã thu từng chi nhánh",
+        description: "Cần quyền xem doanh thu (quản trị hoặc nhân viên được cấp revenue:view, chỉ chi nhánh của mình).",
+        security: loggedIn,
+        parameters: [
+          query("month", "Tháng (mặc định tháng này)", month),
+          query("branch", "Chi nhánh (chỉ quản trị)", { type: "string" }),
+        ],
+        responses: { ...ok("Bảng đối soát"), ...errors(400, 401, 403) },
+      },
+    },
+    "/api/admin/stats/summary": {
+      get: {
+        tags: ["Quầy & vé"],
+        summary: "Tổng hợp: doanh thu thực nhận, số đơn so với kỳ trước, tiền mặt / chuyển khoản, xếp hạng chủ đề, gói, máy",
+        description: "Không có quyền xem doanh thu thì chỉ trả số lượt.",
+        security: loggedIn,
+        parameters: [
+          query("from", "Từ ngày (YYYY-MM-DD, mặc định hôm nay)", { type: "string", format: "date" }),
+          query("to", "Đến ngày (YYYY-MM-DD)", { type: "string", format: "date" }),
+          query("branch", "Chi nhánh (quản trị; lễ tân luôn là chi nhánh được phân công)", { type: "string" }),
+          query("room", "Tên máy / phòng", { type: "string" }),
+        ],
+        responses: { ...ok("Tổng hợp"), ...errors(400, 401, 403) },
+      },
+    },
+    "/api/admin/stats/chart": {
+      get: {
+        tags: ["Quầy & vé"],
+        summary: "Thống kê doanh thu: doanh thu & số đơn theo ngày (≤ 62 ngày) hoặc theo tháng, kèm kỳ so sánh",
+        description: "Cần quyền xem doanh thu.",
+        security: loggedIn,
+        parameters: [
+          query("from", "Từ ngày (YYYY-MM-DD, mặc định hôm nay)", { type: "string", format: "date" }),
+          query("to", "Đến ngày (YYYY-MM-DD)", { type: "string", format: "date" }),
+          query("branch", "Chi nhánh (quản trị; lễ tân luôn là chi nhánh được phân công)", { type: "string" }),
+          query("room", "Tên máy / phòng", { type: "string" }),
+        ],
+        responses: { ...ok("Chuỗi số liệu"), ...errors(400, 401, 403) },
+      },
+    },
+    "/api/admin/screens": {
+      get: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Màn hình chờ: cấu hình chung và cấu hình riêng từng máy",
+        description: adminOnly + " Lần đầu tự tạo cấu hình chung từ màn hình chờ cũ.",
+        security: loggedIn,
+        responses: { ...ok("Danh sách", { type: "array", items: { type: "object" } }), ...errors(401, 403) },
+      },
+      post: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Thêm cấu hình màn hình chờ riêng cho một số máy",
+        description: adminOnly,
+        security: loggedIn,
+        requestBody: { required: true, ...json(ref("ScreenInput")) },
+        responses: { ...ok("Danh sách sau khi lưu"), ...errors(400, 401, 403) },
+      },
+    },
+    "/api/admin/screens/{id}": {
+      parameters: [pathParam("id", "Mã màn hình chờ")],
+      put: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Sửa màn hình chờ (ảnh giữ lại gửi { _id }, ảnh mới gửi { data })",
+        description: adminOnly,
+        security: loggedIn,
+        requestBody: { required: true, ...json(ref("ScreenInput")) },
+        responses: { ...ok("Danh sách sau khi lưu"), ...errors(400, 401, 403, 404, 409) },
+      },
+      delete: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Xóa cấu hình riêng (không xóa được cấu hình chung)",
+        description: adminOnly,
+        security: loggedIn,
+        responses: { ...ok("Danh sách còn lại"), ...errors(400, 401, 403, 404, 409) },
+      },
+    },
+    "/api/admin/themes": {
+      get: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Chủ đề (bộ khung): số khung, số ô ảnh, trạng thái, thứ tự",
+        description: adminOnly,
+        security: loggedIn,
+        responses: { ...ok("Danh sách", { type: "array", items: { type: "object" } }), ...errors(401, 403) },
+      },
+      post: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Thêm chủ đề (chưa có khung)",
+        description: adminOnly,
+        security: loggedIn,
+        requestBody: body({ name: str("Tên chủ đề") }, ["name"]),
+        responses: { ...ok("Danh sách", { type: "array", items: { type: "object" } }, 201), ...errors(400, 401, 403, 409) },
+      },
+      put: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Đổi tên chủ đề (đổi luôn tên bộ của các khung) hoặc bật / tắt hiển thị với khách",
+        description: adminOnly,
+        security: loggedIn,
+        requestBody: body({ name: str("Tên hiện tại"), newName: str("Tên mới"), active: bool("Hiện cho khách") }, ["name"]),
+        responses: { ...ok("Danh sách"), ...errors(400, 401, 403, 404, 409) },
+      },
+    },
+    "/api/admin/themes/order": {
+      put: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Sắp xếp thứ tự chủ đề khách thấy",
+        description: adminOnly,
+        security: loggedIn,
+        requestBody: body({ names: { type: "array", items: { type: "string" } } }, ["names"]),
+        responses: { ...ok("Danh sách"), ...errors(400, 401, 403, 409) },
+      },
+    },
+    "/api/admin/themes/{name}": {
+      delete: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Xóa chủ đề (khung trong chủ đề thành khung lẻ, không bị xóa)",
+        description: adminOnly,
+        security: loggedIn,
+        parameters: [pathParam("name", "Tên chủ đề", { type: "string" })],
+        responses: { ...ok("Danh sách còn lại"), ...errors(400, 401, 403, 404) },
+      },
+    },
+    "/api/admin/settings/custom-filters": {
+      put: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Lưu các filter tiệm tự tạo (độ sáng, tương phản, bão hòa, sepia %, xoay màu độ)",
+        description: adminOnly,
+        security: loggedIn,
+        requestBody: body({ customFilters: { type: "array", items: { type: "object" } } }, ["customFilters"]),
+        responses: { ...ok("Cài đặt", ref("Settings")), ...errors(400, 401, 403) },
       },
     },
     "/api/admin/settings": {

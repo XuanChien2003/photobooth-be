@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { Booking, PrintJob } from "../../models/index.js";
+import { admin, allow, requireBranch, staffBranch } from "../../middleware/auth.js";
 import { deleteMedia, MEDIA_TTL_MS } from "../../services/media.js";
 import { printEvents } from "../../services/print-events.js";
 import { fail, id } from "../validation.js";
@@ -10,6 +11,7 @@ export const printsRouter = Router();
 
 // ─── Hàng chờ in: lệnh in khách gửi từ Web App ───────────────────────────
 printsRouter.get("/stream", (req, res) => {
+  const assigned = staffBranch(req);
   res.set({
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache, no-transform",
@@ -18,8 +20,10 @@ printsRouter.get("/stream", (req, res) => {
   });
   res.flushHeaders();
   res.write("retry: 5000\n\n");
-  const send = (job) =>
-    res.write(`event: print\ndata: ${JSON.stringify(job)}\n\n`);
+  const send = (job) => {
+    if (!assigned || job.branch === assigned)
+      res.write(`event: print\ndata: ${JSON.stringify(job)}\n\n`);
+  };
   printEvents.on("print", send);
   const ping = setInterval(() => res.write(": ping\n\n"), 25000);
   req.on("close", () => {
@@ -28,6 +32,7 @@ printsRouter.get("/stream", (req, res) => {
   });
 });
 printsRouter.get("/", async (req, res) => {
+  const assigned = staffBranch(req);
   const status = z
     .enum(["pending", "printed"])
     .default("pending")
@@ -35,6 +40,7 @@ printsRouter.get("/", async (req, res) => {
   // Chỉ lệnh in còn hạn (24 giờ kể từ lúc gửi); lệnh hết hạn được dọn mỗi 15 phút.
   const jobs = await PrintJob.find({
     status,
+    ...(assigned && { branch: assigned }),
     createdAt: { $gt: new Date(Date.now() - MEDIA_TTL_MS) },
   })
     .sort({ createdAt: status === "pending" ? 1 : -1 })
@@ -43,10 +49,13 @@ printsRouter.get("/", async (req, res) => {
     .lean();
   res.json(jobs.map((j) => publicJob(j, j.booking?.accessToken)));
 });
-printsRouter.patch("/:id", async (req, res) => {
+printsRouter.patch("/:id", allow("print:operate"), async (req, res) => {
   const d = z
     .object({ status: z.enum(["pending", "printed"]) })
     .parse(req.body);
+  const target = await PrintJob.findById(id.parse(req.params.id)).select("branch").lean();
+  if (!target) fail(404, "Không tìm thấy lệnh in.");
+  requireBranch(req, target.branch);
   const job = await PrintJob.findByIdAndUpdate(
     id.parse(req.params.id),
     d.status === "printed"
@@ -59,7 +68,7 @@ printsRouter.patch("/:id", async (req, res) => {
     await Booking.updateOne({ _id: job.booking._id }, { printed: true });
   res.json(publicJob(job, job.booking?.accessToken));
 });
-printsRouter.delete("/:id", async (req, res) => {
+printsRouter.delete("/:id", admin, async (req, res) => {
   const job = await PrintJob.findById(id.parse(req.params.id));
   if (!job) fail(404, "Không tìm thấy lệnh in.");
   await deleteMedia([

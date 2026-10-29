@@ -3,18 +3,23 @@ import mongoose from "mongoose";
 const { Schema } = mongoose;
 const bookingSchema = new Schema(
   {
-    code: { type: String, unique: true },
+    code: { type: String, unique: true, sparse: true },
     name: String,
     phone: String,
     room: { type: Schema.Types.ObjectId, ref: "Room" },
     package: { type: Schema.Types.ObjectId, ref: "Package" },
     roomName: String,
+    branch: String,
     packageName: String,
     shots: Number,
     prints: Number,
     date: String,
     time: String,
-    source: { type: String, enum: ["counter", "scheduled"] },
+    // kiosk: khách tự chọn gói và trả tiền ngay tại máy chụp.
+    source: { type: String, enum: ["counter", "scheduled", "kiosk"] },
+    // Tiền máy nhận tiền đã nhận (có thể dư so với giá gói) và từng tờ tiền.
+    cashReceived: Number,
+    cashBills: [{ _id: false, amount: Number, at: Date }],
     issuedBy: { type: Schema.Types.ObjectId, ref: "User" },
     total: Number,
     discount: Number,
@@ -26,8 +31,10 @@ const bookingSchema = new Schema(
     },
     paymentMethod: String,
     paid: { type: Boolean, default: false },
+    paidAt: Date,
+    codeExpiresAt: Date,
     active: { type: Boolean, default: true },
-    accessToken: { type: String, unique: true, select: false },
+    accessToken: { type: String, unique: true, sparse: true, select: false },
     captureSession: { type: String, select: false },
     captureStartedAt: Date,
     captureEndsAt: Date,
@@ -36,6 +43,9 @@ const bookingSchema = new Schema(
     captureMode: { type: String, enum: ["camera", "folder", "tether"] },
     // Snapshot at sale: later package edits must not change a paid ticket's time.
     captureDuration: Number,
+    countdownSeconds: Number,
+    selectCount: Number,
+    printSize: { type: String, enum: ["full", "strip"] },
     // Máy chụp báo "còn sống" vài giây một lần; máy khác chỉ nhận lại mã khi máy cũ im lặng.
     captureSeenAt: Date,
     // Tình trạng máy chụp gửi kèm khi báo "còn sống" (thư mục ảnh, số ảnh thấy được, lỗi đọc…)
@@ -54,7 +64,7 @@ const bookingSchema = new Schema(
         printFile: String,
         originalName: String,
         kind: String,
-        favorite: Boolean,
+        // Set on photos guests deleted while the album could still do that; kept so old albums read the same.
         deleted: Boolean,
         number: Number,
         clientKey: String,
@@ -64,10 +74,19 @@ const bookingSchema = new Schema(
       },
     ],
     video: { file: String, mimeType: String, size: Number },
+    // Ảnh đã ghép khung ở máy chụp (bản chất lượng in, vd. 1200 × 1800) + bản xem nhanh: khách xem /
+    // tải trong album, kể cả khi gói không kèm tờ in hay lệnh in chưa gửi xong.
+    composite: { file: String, thumbnailFile: String, frameName: String, width: Number, height: Number },
     printed: { type: Boolean, default: false },
+    // Bộ khung / chủ đề khách chọn lần gửi in gần nhất (xếp hạng chủ đề ở Tổng quan; lệnh in tự xóa sau 24 giờ).
+    frameName: String,
     // prints: số tờ 10 × 15 cm được in (theo gói + mua thêm); printSheets: số tờ khách đã gửi in.
     printSheets: { type: Number, default: 0 },
     extraPrints: { type: Number, default: 0 },
+    // Số tờ khách chọn thêm trên kiosk, chờ lễ tân thu tiền (bán thêm tờ in sẽ trừ dần).
+    requestedExtraPrints: { type: Number, default: 0 },
+    // Mỗi lần bán thêm tờ in: tiền và hình thức thu tại thời điểm bán (đối soát theo ca trực).
+    extraSales: [{ _id: false, sheets: Number, amount: Number, paymentMethod: String, at: Date }],
     extraPrintKeys: { type: [String], select: false },
     mediaExpiresAt: Date,
     mediaDeleted: { type: Boolean, default: false },
@@ -80,6 +99,9 @@ bookingSchema.index({ createdAt: -1 });
 bookingSchema.index({ date: 1, createdAt: -1 });
 bookingSchema.index({ status: 1, createdAt: -1 });
 bookingSchema.index({ mediaExpiresAt: 1 });
+// Tổng tiền đã thu trong ca trực của một chi nhánh (khung Ca trực làm mới 30 giây/lần).
+bookingSchema.index({ branch: 1, paidAt: 1 });
+bookingSchema.index({ branch: 1, "extraSales.at": 1 });
 // Dọn ảnh hết hạn 15 phút/lần tìm vé có ảnh cũ (ObjectId ảnh mang thời điểm chụp).
 bookingSchema.index({ "photos._id": 1 });
 

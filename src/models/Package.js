@@ -9,6 +9,12 @@ const packageSchema = new mongoose.Schema(
     duration: Number,
     shots: Number,
     prints: Number,
+    countdownSeconds: { type: Number, default: 10 },
+    // Số ảnh khách chọn để ghép khung trên máy chụp (vd. gói 70k chọn 4 tấm).
+    selectCount: { type: Number, default: 4 },
+    printSize: { type: String, enum: ["full", "strip"], default: "full" },
+    // Chi nhánh được bán gói này; để trống = mọi chi nhánh (cấu hình chung).
+    branches: { type: [String], default: [] },
     active: Boolean,
   },
   { timestamps: true },

@@ -8,7 +8,8 @@ import { startMediaCleanup } from "./services/media.js";
 import Frame from "./models/Frame.js";
 import { removeActivityLogs } from "./services/activity-log-cleanup.js";
 import { validateMediaStorage } from "./services/r2.js";
-import { backfillImageHashes } from "./services/frame-image.js";
+import { backfillImageHashes, backfillThumbs } from "./services/frame-image.js";
+import { ensureDefaultPackages } from "./services/default-packages.js";
 if (!config.mongo || !config.secret || config.secret.length < 32)
   throw new Error("Thiếu MONGO_URI hoặc JWT_SECRET (ít nhất 32 ký tự).");
 validateMediaStorage();
@@ -31,10 +32,18 @@ try {
   });
   if (deletedCount) console.log(`Đã xóa ${deletedCount} khung ảnh cũ.`);
   await Promise.all(Object.values(mongoose.models).map((m) => m.init()));
+  await ensureDefaultPackages();
   await backfillImageHashes();
   const server = app.listen(config.port, () =>
     console.log(`API ready: http://localhost:${config.port}`),
   );
+  // Ảnh xem nhanh cho khung / nhãn dán cũ: chạy nền sau khi máy chủ đã nhận khách.
+  setTimeout(() => {
+    backfillThumbs().then(
+      (count) => count && console.log(`Đã tạo ảnh xem nhanh cho ${count} khung / nhãn dán.`),
+      (error) => console.error("Tạo ảnh xem nhanh lỗi:", error.message),
+    );
+  }, 15_000).unref();
   // Proxy phía trước giữ kết nối lâu hơn 5 giây mặc định của Node: tránh cắt đúng lúc nó dùng lại
   // kết nối cũ (lỗi 502 thỉnh thoảng) và đỡ phải bắt tay lại mỗi yêu cầu.
   server.keepAliveTimeout = 65_000;
@@ -50,10 +59,12 @@ try {
       }),
     );
 } catch (e) {
+  // Lỗi có thể ở bước kết nối hoặc ở các bước chuẩn bị dữ liệu sau đó: in đủ lỗi để biết bước nào.
   console.error(
-    "Không thể kết nối MongoDB:",
-    e.name,
-    "— kiểm tra URI, IP allowlist và kết nối mạng.",
+    e.name === "MongooseServerSelectionError"
+      ? "Không thể kết nối MongoDB — kiểm tra URI, IP allowlist và kết nối mạng:"
+      : "Không khởi động được máy chủ:",
+    e,
   );
   process.exit(1);
 }

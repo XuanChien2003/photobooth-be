@@ -2,6 +2,7 @@ import jwt from "jsonwebtoken";
 import { config } from "../config.js";
 import { User } from "../models/index.js";
 import { userCache } from "../services/read-cache.js";
+import { fail } from "../routes/validation.js";
 
 export function setSession(res, user) {
   const signed = jwt.sign(
@@ -34,8 +35,48 @@ export async function auth(req, res, next) {
   }
 }
 export const isAdmin = (req) => req.user?.role === "admin";
+// Quyền chủ cửa hàng cấp cho từng nhân viên (Tài khoản → Phân quyền). Tài khoản chưa lưu quyền
+// dùng bộ mặc định: đúng những việc lễ tân làm được trước khi có phân quyền.
+export const STAFF_PERMISSIONS = [
+  "revenue:view",
+  "orders:export",
+  "orders:cancel",
+  "print:operate",
+  "shift:operate",
+  "rooms:setup",
+];
+export const DEFAULT_STAFF_PERMISSIONS = [
+  "orders:export",
+  "print:operate",
+  "shift:operate",
+  "rooms:setup",
+];
+export const permissionsOf = (user) =>
+  user?.role === "admin"
+    ? STAFF_PERMISSIONS
+    : (user?.permissions ?? DEFAULT_STAFF_PERMISSIONS).filter((p) => STAFF_PERMISSIONS.includes(p));
+export const can = (req, permission) => permissionsOf(req.user).includes(permission);
+export const allow = (permission) => (req, res, next) =>
+  can(req, permission)
+    ? next()
+    : res
+        .status(403)
+        .json({ message: "Tài khoản chưa được cấp quyền thực hiện thao tác này." });
+export function staffBranch(req) {
+  if (isAdmin(req)) return null;
+  const branch = req.user?.branch?.trim();
+  if (!branch) fail(403, "Tài khoản chưa được gán chi nhánh. Nhờ chủ cửa hàng cập nhật tài khoản.");
+  return branch;
+}
+export function requireBranch(req, branch) {
+  const assigned = staffBranch(req);
+  if (assigned && assigned !== branch?.trim())
+    fail(403, "Bạn chỉ được thao tác với chi nhánh được phân công.");
+}
+// Staff must see the amount of an order to collect or confirm payment. Revenue
+// aggregates remain admin-only in /stats; discounts stay private.
 export const hideMoney = (req, b) =>
-  isAdmin(req) ? b : { ...b, total: undefined, discount: undefined };
+  isAdmin(req) ? b : { ...b, discount: undefined };
 export const admin = (req, res, next) =>
   req.user.role === "admin"
     ? next()

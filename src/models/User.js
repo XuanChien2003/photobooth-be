@@ -7,6 +7,9 @@ const userSchema = new mongoose.Schema(
     email: { type: String, unique: true },
     password: { type: String, select: false },
     role: { type: String, enum: ["admin", "staff"] },
+    branch: { type: String, default: "" },
+    // Quyền của nhân viên (Tài khoản → Phân quyền). Không có = bộ quyền mặc định của lễ tân.
+    permissions: { type: [String], default: undefined },
     active: { type: Boolean, default: true },
     sessionVersion: { type: Number, default: 0, select: false },
   },

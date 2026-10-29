@@ -4,9 +4,8 @@ import { z } from "zod";
 import { config } from "../config.js";
 import { mediaReference } from "../services/r2.js";
 import { Booking, PrintJob } from "../models/index.js";
-import { appendCapture, renumberPhotoStages } from "../services/capture.js";
+import { appendCapture } from "../services/capture.js";
 import { timed } from "../services/image-save-queue.js";
-import { saveAlbumFavorites } from "../services/album-favorites.js";
 import {
   deleteMedia,
   readMedia,
@@ -97,22 +96,25 @@ albumsRouter.get("/:token/photos/:photo", async (req, res) => {
   );
   await sendMedia(req, res, photoFile(p, req.query.size), "image/jpeg", photoExpiry(p));
 });
-// ─── Web App của khách: quản lý ảnh gốc, yêu thích, gửi in ───────────────
-
-albumsRouter.put("/:token/favorites", async (req, res) => {
-  const d = z
-    .object({
-      ids: z
-        .array(id.transform((photo) => photo.toLowerCase()))
-        .refine(
-          (ids) => new Set(ids).size === ids.length,
-          "Danh sách ảnh bị trùng. Vui lòng tải lại trang.",
-        ),
-    })
-    .parse(req.body);
-  const b = await album(req);
-  requireMedia(b);
-  res.json(await albumBooking(await saveAlbumFavorites(b, d.ids)));
+// Video tua nhanh của lượt chụp: xem trong album (hỗ trợ tua) hoặc tải về (?download=1).
+albumsRouter.get("/:token/video", async (req, res) => {
+  const b = await album(req, { code: 1, status: 1, captureEndsAt: 1, video: 1, mediaDeleted: 1 });
+  if (!b.video?.file || b.mediaDeleted) fail(404, "Album chưa có video.");
+  if (req.query.download === "1")
+    res.attachment(`NXC-${b.code}-video.${b.video.mimeType === "video/mp4" ? "mp4" : "webm"}`);
+  res.set("Cache-Control", "private, max-age=600");
+  await sendMedia(req, res, b.video.file, b.video.mimeType);
+});
+// Ảnh đã ghép khung ở máy chụp: ?size=thumbnail bản xem nhanh, ?download=1 tải về.
+albumsRouter.get("/:token/composite", async (req, res) => {
+  const b = await album(req, { code: 1, status: 1, captureEndsAt: 1, composite: 1, mediaDeleted: 1 });
+  if (!b.composite?.file || b.mediaDeleted) fail(404, "Album chưa có ảnh ghép khung.");
+  if (req.query.download === "1") res.attachment(`NXC-${b.code}-anh-ghep.jpg`);
+  res.set("Cache-Control", "private, max-age=600");
+  const file = req.query.size === "thumbnail" && req.query.download !== "1"
+    ? b.composite.thumbnailFile || b.composite.file
+    : b.composite.file;
+  await sendMedia(req, res, file, "image/jpeg");
 });
 albumsRouter.get("/:token/download", async (req, res) => {
   const b = await album(req);
@@ -234,7 +236,7 @@ albumsRouter.post("/:token/print-pack", printLimit, printBody, async (req, res) 
     return res.json({ ...publicJob(verifyReplay(existing)), ...quota(b) });
   requireMedia(b);
   const n = d.sheets.length;
-  const reserved = await reserveSheets(b, n);
+  const reserved = await reserveSheets(b, n, d.frameName);
   if (!reserved) fail(409, quotaMessage(printQuota(b), b.printSheets || 0));
   const files = [], saves = [];
   try {
@@ -262,6 +264,8 @@ albumsRouter.post("/:token/print-pack", printLimit, printBody, async (req, res) 
       code: b.code,
       name: b.name,
       roomName: b.roomName,
+      branch: b.branch,
+      printSize: b.printSize || "full",
       copies: 1,
       frameName: d.frameName,
       file: files[0],
@@ -270,10 +274,10 @@ albumsRouter.post("/:token/print-pack", printLimit, printBody, async (req, res) 
       height: sheets[0].height,
       requestKey: d.requestKey,
       requestFingerprint: fingerprint,
-      spoolStatus: config.dnpPrinter ? "queued" : "idle",
+      spoolStatus: config.dnpPrinter || config.printAgentToken ? "queued" : "idle",
     });
     dispatchPrint(job);
-    printEvents.emit("print", publicJob(job, req.params.token));
+    printEvents.emit("print", { ...publicJob(job, req.params.token), branch: b.branch });
     res.status(201).json({ ...publicJob(job), ...quota(reserved) });
   } catch (e) {
     await Promise.allSettled(saves); // remove only after every upload has finished
@@ -320,21 +324,4 @@ albumsRouter.post("/:token/photos", photoBody, async (req, res) => {
       preview: d.preview, storedOriginal: storedOriginal(b._id, d) },
   ));
   res.status(201).json(await albumBooking(saved));
-});
-albumsRouter.delete("/:token/photos", async (req, res) => {
-  const ids = [...new Set(z.array(id).parse(req.body.ids))].map((photo) => new mongoose.Types.ObjectId(photo));
-  const b = await album(req, { status: 1, captureEndsAt: 1 });
-  if (b.status !== "completed") fail(409, "Phiên chụp chưa hoàn thành.");
-  // Hide the photos and close the gaps in their numbers in one atomic update (no lost photo
-  // when a phone upload commits at the same moment).
-  await Booking.updateOne({ _id: b._id, status: "completed" }, [
-    { $set: { photos: { $map: {
-      input: { $ifNull: ["$photos", []] },
-      as: "p",
-      in: { $cond: [{ $in: ["$$p._id", ids] },
-        { $mergeObjects: ["$$p", { deleted: true, favorite: false }] }, "$$p"] },
-    } } } },
-    ...renumberPhotoStages(),
-  ]);
-  res.json(await albumBooking(await album(req)));
 });
