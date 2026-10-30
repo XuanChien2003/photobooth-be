@@ -1460,7 +1460,7 @@ export const openapi = {
     "/api/admin/storage": {
       get: {
         tags: ["In ảnh"],
-        summary: "Dung lượng lưu ảnh cho Trợ lí Minh Dâm",
+        summary: "Dung lượng lưu ảnh cho Trợ lí Minh",
         description:
           "Lễ tân và quản trị được xem. Chỉ đọc metadata GridFS/R2, dbStats và atlasSize, không tải ảnh hoặc tự xóa. R2 liệt kê trong R2_PREFIX và cache tối đa 30 giây, báo quota riêng bằng GB thập phân. MongoDB giữ quota toàn cluster bằng MB = 1024² byte; mặc định 512 MB. Khi kho R2 lỗi, media.available=false; không coi dung lượng chưa biết là 0.",
         security: loggedIn,

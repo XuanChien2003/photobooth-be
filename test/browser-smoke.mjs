@@ -250,6 +250,10 @@ try {
   await signIn(admin, "admin@test.local");
   await menu(admin, "Quản lý máy").click();
   await admin.getByRole("button", { name: /^Cài máy chụp cho / }).click();
+  // Bước 1: chọn loại phòng (phòng nhập mã: khách mua mã ở quầy), rồi mới có liên kết và QR.
+  const setupDialog = admin.getByRole("dialog", { name: "Cài máy chụp" });
+  await setupDialog.getByRole("radio", { name: /Phòng nhập mã/ }).check();
+  await setupDialog.getByRole("button", { name: "Tiếp tục: lấy liên kết & QR" }).click();
   const kioskUrl = await admin
     .getByRole("link", { name: "Mở máy chụp", exact: true })
     .getAttribute("href");
@@ -598,10 +602,10 @@ try {
   await admin.getByText(/Lệnh in mới · vé #/).first().waitFor();
 
   // ── Trợ lí dung lượng: số liệu thật, giới hạn và chỉ dọn ảnh đã hết hạn ──
-  // Trợ lí không có mục trong menu: mở từ cảnh báo dung lượng (MongoDB tạm chưa đo được cả cluster).
+  // Mở trợ lí từ cảnh báo dung lượng (MongoDB tạm chưa đo được cả cluster); trang cũng có trên menu.
   await admin.getByRole("button", { name: "Mở trợ lí để dọn ảnh", exact: true }).click();
   await admin
-    .getByRole("heading", { name: "Trợ lí Minh Dâm", exact: true })
+    .getByRole("heading", { name: "Trợ lí Minh", exact: true })
     .waitFor();
   await admin
     .getByText("Chưa đo được dung lượng toàn cluster", { exact: false })
@@ -807,7 +811,7 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: web nội bộ (/ → quản trị, không trang công khai) → lễ tân tạo phiếu rồi xác nhận đã thu (mất phản hồi không trùng phiếu, không trùng mã) → máy chụp: bấm dây, chụp, chọn ảnh và khung, ghép gửi album, gửi lệnh in → khách quét QR xem / tải ảnh ghép, ảnh gốc, ZIP trên điện thoại → lễ tân xem đơn hàng, in lại → Trợ lí Minh Dâm đo dung lượng, lưu giới hạn, dọn đúng ảnh hết hạn; không lỗi trình duyệt, không tràn ngang.",
+    "PASS: web nội bộ (/ → quản trị, không trang công khai) → lễ tân tạo phiếu rồi xác nhận đã thu (mất phản hồi không trùng phiếu, không trùng mã) → máy chụp: bấm dây, chụp, chọn ảnh và khung, ghép gửi album, gửi lệnh in → khách quét QR xem / tải ảnh ghép, ảnh gốc, ZIP trên điện thoại → lễ tân xem đơn hàng, in lại → Trợ lí Minh đo dung lượng, lưu giới hạn, dọn đúng ảnh hết hạn; không lỗi trình duyệt, không tràn ngang.",
   );
 } catch (error) {
   for (const context of browser?.contexts() || [])

@@ -228,6 +228,25 @@ test("custom filters are validated and published in the catalog settings", async
   assert.deepEqual(settings.customFilters, [{ ...filter, active: true }]);
 });
 
+test("setting up a kiosk picks the room type first; test mode only exists in cash rooms", async () => {
+  const setup = (body) => staff.post(`/api/admin/rooms/${room._id}/device`).send(body);
+  const cash = (await setup({ payment: "cash", paymentTest: true }).expect(200)).body;
+  assert.equal(cash.payment, "cash");
+  assert.equal(cash.paymentTest, true);
+  const ping = (await request(app).post("/api/kiosk/ping").send({ device: cash.token }).expect(200)).body;
+  assert.equal(ping.room.payment, "cash");
+  assert.equal(ping.room.paymentTest, true);
+  assert.equal(ping.room.cashCheckoutReady, true);
+  // Phòng nhập mã: chế độ thử tự tắt. Không gửi loại phòng: giữ nguyên.
+  const counter = (await setup({ payment: "counter", paymentTest: true }).expect(200)).body;
+  assert.deepEqual([counter.payment, counter.paymentTest], ["counter", false]);
+  const kept = (await setup({}).expect(200)).body;
+  assert.deepEqual([kept.payment, kept.paymentTest], ["counter", false]);
+  await setup({ payment: "coins" }).expect(400);
+  const saved = await Room.findById(room._id).lean();
+  assert.deepEqual([saved.payment, saved.paymentTest], ["counter", false]);
+});
+
 test("kiosks report online with the remote flip mode; packages can be limited to branches", async () => {
   await admin.put(`/api/admin/rooms/${room._id}`).send({
     name: "Máy 1", description: "", branch: "Bắc Giang", flip: "off", active: true,

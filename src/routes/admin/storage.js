@@ -4,6 +4,8 @@ import { z } from "zod";
 import { Setting } from "../../models/index.js";
 import { admin } from "../../middleware/auth.js";
 import { purgeExpiredMedia } from "../../services/media.js";
+import { deleteCustomerMedia, listCustomerMedia } from "../../services/customer-media.js";
+import { id } from "../validation.js";
 import {
   BYTES_PER_MB,
   STORAGE_SETTING_KEY,
@@ -59,6 +61,15 @@ storageRouter.put("/r2-limit", admin, async (req, res) => {
     { upsert: true },
   );
   res.json(await getStorageSummary());
+});
+
+// Ảnh đang lưu của từng khách (Trợ lí Minh): chỉ quản trị viên xem và xoá.
+storageRouter.get("/customers", admin, async (req, res) => {
+  res.json(await listCustomerMedia());
+});
+storageRouter.delete("/customers/:id", admin, async (req, res) => {
+  const deleted = await deleteCustomerMedia(id.parse(req.params.id));
+  res.json({ ...deleted, summary: await getStorageSummary({ freshR2: true }) });
 });
 
 storageRouter.post("/cleanup-expired", admin, async (req, res) => {
