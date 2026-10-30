@@ -20,6 +20,16 @@ export const resourcesRouter = Router();
 
 // Danh sách khung không kèm ảnh base64 (mỗi lần tải lại cả trăm KB tới vài MB): chỉ trả địa chỉ
 // ảnh để cache; mở sửa khung thì lấy đủ ảnh của đúng khung đó ở đây.
+// Xoá hẳn một phòng đã ngừng sử dụng (Quản lý máy → phòng đã tắt → Xoá hẳn). Phòng đang chạy phải
+// ngừng sử dụng trước để không xoá nhầm phòng đang có khách. Đơn hàng cũ vẫn giữ tên phòng
+// (roomName); liên kết máy chụp của phòng không mở được nữa.
+resourcesRouter.delete("/rooms/:id/permanent", admin, async (req, res) => {
+  const room = await Room.findById(id.parse(req.params.id)).select("active").lean();
+  if (!room) fail(404, "Không tìm thấy phòng.");
+  if (room.active) fail(409, "Ngừng sử dụng phòng trước rồi mới xoá hẳn.");
+  await Room.deleteOne({ _id: room._id });
+  res.json({ ok: true });
+});
 resourcesRouter.get("/frames/:id", admin, async (req, res) => {
   const frame = await Frame.findById(id.parse(req.params.id)).select("-thumb");
   if (!frame) fail(404, "Không tìm thấy dữ liệu.");
