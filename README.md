@@ -139,7 +139,7 @@ trình duyệt. Nếu sau này con số này lên hàng trăm ms (máy chủ ho�
 
 ## Theo dõi dung lượng ảnh
 
-Trong **Hàng chờ in**, **Trợ lí Minh Dâm** đọc `GET /api/admin/storage` để hiển thị số file và
+Trong **Dung lượng ảnh**, **Trợ lí Minh** đọc `GET /api/admin/storage` để hiển thị số file và
 dung lượng ảnh (gồm ảnh gốc, ảnh xử lý, tờ in, video và file khác). Chỉ đọc `media.files.length`,
 không tải dữ liệu trong `media.chunks`; các phiên bản GridFS trùng tên vẫn được tính riêng.
 Các nhóm tính theo tham chiếu trong vé/lệnh in, mỗi file chỉ thuộc một nhóm.
@@ -148,6 +148,9 @@ không tải nội dung) và GridFS. `media.stores` tách hai kho; `r2.quota` đ
 Nhóm `thumbnails` xuất hiện khi có ảnh nhỏ. `media.available=false` báo thống kê chưa đủ do R2 lỗi;
 dung lượng R2 chưa biết là `null`, không phải 0. `retention.available=false` khi chưa đo đủ hạn ảnh.
 `PUT /api/admin/storage/r2-limit` lưu GB thập phân tại key `media-storage-r2`; null bỏ mức cảnh báo.
+`GET /api/admin/storage/customers` (quản trị viên) liệt kê từng vé còn ảnh: số ảnh, số file, dung lượng
+(ảnh mọi cỡ, ảnh ghép khung, video, tờ in), lần chụp cuối. `DELETE /api/admin/storage/customers/:id`
+xoá hết file của một vé, giữ vé và doanh thu; tờ của lệnh in chưa in được trả lại vé. Khách đang chụp thì từ chối (409).
 R2 mặc định theo dõi 10 GB dung lượng hiện tại, không phải quota cứng/hóa đơn GB-tháng.
 
 `retention.nextImageExpiresAt` là hạn lưu gần nhất của ảnh còn trong GridFS: ảnh album và

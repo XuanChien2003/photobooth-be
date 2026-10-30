@@ -52,8 +52,9 @@ const resources = {
       importedAt: z.string().date().or(z.literal("")).nullable().default(null),
       expiresAt: z.string().date().or(z.literal("")).nullable().default(null),
       flip: z.enum(["device", "on", "off"]).default("device"),
-      payment: z.enum(["counter", "cash"]).default("counter"),
-      paymentTest: z.boolean().default(false),
+      // Loại phòng chọn ở bước "Cài máy chụp"; sửa phòng không gửi thì giữ nguyên.
+      payment: z.enum(["counter", "cash"]).optional(),
+      paymentTest: z.boolean().optional(),
       active,
     }),
   ],
