@@ -616,3 +616,18 @@ test("a counter code never sells a Polaroid layout (Instax): photobooth codes pr
     await Package.deleteOne({ _id: layout._id });
   }
 });
+
+test("a room is deleted for good only after it was stopped; staff cannot delete rooms", async () => {
+  const spare = await Room.create({ name: "Phòng thừa", branch: "Bắc Giang", active: true });
+  try {
+    const running = await admin.delete(`/api/admin/rooms/${spare._id}/permanent`).expect(409);
+    assert.match(running.body.message, /Ngừng sử dụng phòng trước/);
+    await admin.delete(`/api/admin/rooms/${spare._id}`).expect(200);
+    await staff.delete(`/api/admin/rooms/${spare._id}/permanent`).expect(403);
+    await admin.delete(`/api/admin/rooms/${spare._id}/permanent`).expect(200);
+    assert.equal(await Room.countDocuments({ _id: spare._id }), 0);
+    await admin.delete(`/api/admin/rooms/${spare._id}/permanent`).expect(404);
+  } finally {
+    await Room.deleteOne({ _id: spare._id });
+  }
+});
