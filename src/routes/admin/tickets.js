@@ -42,6 +42,10 @@ ticketsRouter.post("/draft", auth, bookingLimit, async (req, res) => {
     Package.findOne({ _id: d.package, active: true }),
   ]);
   if ((d.room && !room) || !pack) fail(400, "Phòng hoặc gói chụp không còn hoạt động.");
+  // Mã chụp chỉ cho phòng photobooth (in DNP); layout Polaroid (khổ Instax) khách chọn ở máy phòng
+  // Polaroid và trả tiền ở quầy, không dùng mã.
+  if (pack.printSize === "instax")
+    fail(400, "Layout Polaroid không bán bằng mã chụp — khách chọn layout ở máy phòng Polaroid và trả tiền ở quầy.");
   if (room) requireBranch(req, room.branch);
   const branch = room?.branch || d.branch || assigned;
   if (!branch) fail(400, "Vui lòng chọn chi nhánh trước khi tạo phiếu.");
@@ -189,6 +193,10 @@ ticketsRouter.post("/", auth, bookingLimit, async (req, res) => {
   ]);
   if ((d.room && !room) || !pack)
     fail(400, "Phòng hoặc gói chụp không còn hoạt động.");
+  // Mã chụp chỉ cho phòng photobooth (in DNP); layout Polaroid (khổ Instax) khách chọn ở máy phòng
+  // Polaroid và trả tiền ở quầy, không dùng mã.
+  if (pack.printSize === "instax")
+    fail(400, "Layout Polaroid không bán bằng mã chụp — khách chọn layout ở máy phòng Polaroid và trả tiền ở quầy.");
   if (room) requireBranch(req, room.branch);
   const branch = room?.branch || d.branch || assigned;
   if (!branch) fail(400, "Vui lòng chọn chi nhánh trước khi tạo mã.");

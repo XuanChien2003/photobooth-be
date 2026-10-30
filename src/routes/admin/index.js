@@ -27,10 +27,10 @@ adminRouter.use("/stats", statsRouter);
 adminRouter.use("/storage", storageRouter);
 adminRouter.use("/shifts", shiftsRouter);
 
-// Cài máy chụp: chọn loại phòng (nhập mã / đút tiền, kèm chế độ thử) rồi mới cấp liên kết + QR.
-// Không gửi loại phòng thì giữ nguyên như đang lưu.
+// Cài máy chụp: chọn loại phòng (Photobooth / Polaroid, kèm chế độ thử đút tiền của photobooth) rồi
+// mới cấp liên kết + QR. Không gửi loại phòng thì giữ nguyên như đang lưu.
 const deviceSetup = z.object({
-  payment: z.enum(["counter", "cash"]).optional(),
+  kind: z.enum(["photobooth", "polaroid"]).optional(),
   paymentTest: z.boolean().optional(),
 });
 adminRouter.post("/rooms/:id/device", allow("rooms:setup"), async (req, res) => {
@@ -39,16 +39,16 @@ adminRouter.post("/rooms/:id/device", allow("rooms:setup"), async (req, res) => 
   if (!room.active) fail(409, "Phòng chụp đã ngừng hoạt động.");
   requireBranch(req, room.branch);
   const d = deviceSetup.parse(req.body || {});
-  if (d.payment) {
-    // Chế độ thử (nút giả lập đút tiền) chỉ có ở phòng đút tiền.
-    const paymentTest = d.payment === "cash" && Boolean(d.paymentTest);
-    if (room.payment !== d.payment || room.paymentTest !== paymentTest)
-      await Room.updateOne({ _id: room._id }, { payment: d.payment, paymentTest });
-    room.payment = d.payment;
+  if (d.kind) {
+    // Chế độ thử (nút giả lập đút tiền) chỉ có ở phòng photobooth (phòng Polaroid không thu tiền).
+    const paymentTest = d.kind === "photobooth" && Boolean(d.paymentTest);
+    if ((room.kind || "photobooth") !== d.kind || room.paymentTest !== paymentTest)
+      await Room.updateOne({ _id: room._id }, { kind: d.kind, paymentTest });
+    room.kind = d.kind;
     room.paymentTest = paymentTest;
   }
   res.json({
-    payment: room.payment || "counter",
+    kind: room.kind || "photobooth",
     paymentTest: Boolean(room.paymentTest),
     token: jwt.sign({ type: "kiosk", room: String(room._id), jti: crypto.randomUUID() }, config.secret, {
       // Máy chụp nhớ liên kết sau lần mở đầu; 1 năm để tiệm không phải cài lại hằng tháng.

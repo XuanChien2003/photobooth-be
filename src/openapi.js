@@ -1046,7 +1046,7 @@ export const openapi = {
       post: {
         tags: ["Máy chụp (kiosk)"],
         summary: "Khách mua lượt chụp ngay tại máy (đút tiền) hoặc bỏ qua trả tiền ở chế độ thử",
-        description: "Chỉ phòng đút tiền (payment = cash); skip = true cần thêm Chế độ thử (paymentTest). " +
+        description: "Chỉ phòng photobooth (kind = photobooth), chỉ gói tờ bé / tờ to (không bán gói Instax); skip = true cần thêm Chế độ thử (paymentTest). " +
           "prints: số tờ 10 × 15 khách chọn (khổ nhỏ: 1 tờ cắt đôi = 2 tờ nhỏ), tối thiểu 2 tờ nhỏ hoặc 2 tờ lớn; " +
           "tờ vượt số tờ của gói tính theo giá in thêm. bills: các tờ tiền máy nhận tiền đã nhận; tổng phải ≥ giá gói + tờ in thêm " +
           "(409 nếu expectedTotal khác giá máy chủ và chưa đủ tiền). Gửi lại cùng requestKey trả đúng lượt chụp đã tạo.",
@@ -1058,6 +1058,21 @@ export const openapi = {
           bills: { type: "array", items: object({ amount: int("Mệnh giá (VND)"), at: str("Thời điểm nhận (ISO)") }, ["amount"]) },
           prints: int("Số tờ 10 × 15 khách chọn; không gửi = mức tối thiểu của gói"),
           expectedTotal: int("Tổng tiền máy chụp đang hiển thị"),
+        }, ["device", "package", "requestKey"]),
+        responses: { ...ok("Lượt chụp đã mở: { booking, accessToken, captureToken, flip }", { type: "object" }, 201), ...errors(400, 403, 409, 429) },
+      },
+    },
+    "/api/kiosk/polaroid": {
+      post: {
+        tags: ["Máy chụp (kiosk)"],
+        summary: "Phòng Polaroid: khách chọn layout rồi vào chụp luôn (trả tiền ở quầy)",
+        description: "Chỉ phòng kind = polaroid, package là gói khổ Instax (layout). Đơn ghi source = polaroid, paid = false; " +
+          "nhân viên ghi nhận đã thu bằng PATCH /api/admin/bookings/{id} { collected: cash | transfer }. " +
+          "Gửi lại cùng requestKey trả đúng lượt chụp đã tạo.",
+        requestBody: body({
+          device: str("Mã máy chụp của phòng"),
+          package: str("ID gói khổ Instax (layout)"),
+          requestKey: uuid,
         }, ["device", "package", "requestKey"]),
         responses: { ...ok("Lượt chụp đã mở: { booking, accessToken, captureToken, flip }", { type: "object" }, 201), ...errors(400, 403, 409, 429) },
       },
@@ -1097,11 +1112,11 @@ export const openapi = {
     "/api/kiosk/ping": {
       post: {
         tags: ["Máy chụp (kiosk)"],
-        summary: "Máy chụp báo còn mở (mỗi phút), nhận tên phòng, chế độ lật ảnh và cách trả tiền",
-        description: "payment là loại phòng: counter = phòng nhập mã (Chạm → nhập mã), cash = phòng đút tiền (Chạm → khổ ảnh → số bản in → đút tiền). " +
-          "cashCheckoutReady = máy chủ nhận bán lượt chụp tại máy cho phòng này.",
+        summary: "Máy chụp báo còn mở (mỗi phút), nhận tên phòng, chế độ lật ảnh và loại phòng",
+        description: "kind là loại phòng: photobooth (Chạm → Nhập mã / Tiền mặt, in DNP), polaroid (Chạm → chọn layout → chụp, trả tiền ở quầy, in Instax). " +
+          "cashCheckoutReady = máy chủ nhận bán lượt chụp bằng tiền mặt tại máy cho phòng này.",
         requestBody: body({ device: str("Mã máy chụp của phòng") }, ["device"]),
-        responses: { ...ok("{ room: { _id, name, branch, flip, payment, paymentTest, cashCheckoutReady } }"), ...errors(400, 403) },
+        responses: { ...ok("{ room: { _id, name, branch, flip, kind, paymentTest, cashCheckoutReady, printers } }"), ...errors(400, 403) },
       },
     },
     "/api/kiosk/claim": {

@@ -250,9 +250,9 @@ try {
   await signIn(admin, "admin@test.local");
   await menu(admin, "Quản lý máy").click();
   await admin.getByRole("button", { name: /^Cài máy chụp cho / }).click();
-  // Bước 1: chọn loại phòng (phòng nhập mã: khách mua mã ở quầy), rồi mới có liên kết và QR.
+  // Bước 1: chọn loại hình chụp (photobooth: nhập mã hoặc tiền mặt, in DNP), rồi mới có liên kết và QR.
   const setupDialog = admin.getByRole("dialog", { name: "Cài máy chụp" });
-  await setupDialog.getByRole("radio", { name: /Phòng nhập mã/ }).check();
+  await setupDialog.getByRole("radio", { name: /Photobooth/ }).check();
   await setupDialog.getByRole("button", { name: "Tiếp tục: lấy liên kết & QR" }).click();
   const kioskUrl = await admin
     .getByRole("link", { name: "Mở máy chụp", exact: true })
@@ -394,8 +394,11 @@ try {
     .getByText(/Đã chọn thư mục ảnh “X Acquire”/)
     .first()
     .waitFor();
-  // Phòng nhập mã: Chạm để bắt đầu → nhập mã (khách đã chuyển khoản ở quầy) → vào chụp luôn.
+  // Phòng photobooth: Chạm để bắt đầu → chọn cách thanh toán → Nhập mã (khách đã chuyển khoản ở
+  // quầy) → nhập mã → vào chụp luôn.
   await kiosk.getByRole("button", { name: "Chạm để bắt đầu" }).click();
+  await kiosk.getByRole("heading", { name: "Chọn cách thanh toán" }).waitFor();
+  await kiosk.getByRole("button", { name: /Nhập mã/ }).click();
   await kiosk.getByRole("heading", { name: "Nhập mã chụp" }).waitFor();
   await kiosk
     .getByRole("textbox", { name: "Mã chụp", exact: true })

@@ -16,7 +16,8 @@ const bookingSchema = new Schema(
     date: String,
     time: String,
     // kiosk: khách tự chọn gói và trả tiền ngay tại máy chụp.
-    source: { type: String, enum: ["counter", "scheduled", "kiosk"] },
+    // polaroid: lượt chụp phòng Polaroid (chọn layout ở máy, trả tiền ở quầy).
+    source: { type: String, enum: ["counter", "scheduled", "kiosk", "polaroid"] },
     // Tiền máy nhận tiền đã nhận (có thể dư so với giá gói) và từng tờ tiền.
     cashReceived: Number,
     cashBills: [{ _id: false, amount: Number, at: Date }],
