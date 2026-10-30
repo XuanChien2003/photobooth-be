@@ -199,6 +199,36 @@ Các file liên quan: `src/services/media-storage.js`, `src/routes/admin/storage
 - `DNP_PRINTER_NAME` trên chính máy chủ (khi máy chủ chạy ngay trên máy Windows cắm DNP) cũng in tự động không cần
   print agent. Không bật cách nào thì in lại từ trang Đơn hàng → "Tải ảnh" / "In ảnh".
 
+### Máy in Instax mini Link 3 (khổ Instax mini)
+
+Máy in đi theo **khổ ảnh của gói**: khổ to / khổ nhỏ in ra DNP, khổ **Instax mini** in ra máy Instax đặt cạnh
+máy chụp. Fujifilm không có driver máy tính cho mini Link (chỉ có cho Link WIDE), nên print agent nói chuyện với
+máy in qua Bluetooth bằng thư viện nguồn mở [instax-sdk](https://github.com/arahe-dev/instax-sdk) (MIT, đã thử
+trên mini Link 3 với Windows 11). Đây không phải cách chính hãng: cập nhật firmware máy in có thể làm hỏng, nên
+thử trên đúng máy in trước khi nhận khách.
+
+1. Trong app INSTAX trên điện thoại: đặt **tự tắt nguồn (auto power-off) = Tắt** (không thì máy in tự tắt sau
+   5 phút), rồi ngắt kết nối điện thoại với máy in. Cắm sạc USB-C cho máy in.
+2. Trên máy tính chạy print agent (máy cạnh máy chụp, Windows 11 có Bluetooth): cài Python 3.11+, rồi
+   ```powershell
+   git clone https://github.com/arahe-dev/instax-sdk C:\PhotoBooth\instax-sdk
+   cd C:\PhotoBooth\instax-sdk
+   python -m venv .venv
+   .\.venv\Scripts\python.exe -m pip install -e ".[imaging]"
+   .\.venv\Scripts\instax.exe --transport ble classic-address   # in ra địa chỉ, vd. 88:B4:36:XX:XX:XX
+   .\.venv\Scripts\instax.exe info --address 88:B4:36:XX:XX:XX   # phải thấy số phim và pin
+   ```
+3. Thêm vào `.env` của print agent: `INSTAX_ADDRESS=<địa chỉ trên>` và
+   `INSTAX_PYTHON=C:\PhotoBooth\instax-sdk\.venv\Scripts\python.exe`. Một print agent in được cả DNP và
+   Instax; agent chỉ nhận lệnh của khổ mà máy in cạnh nó in được.
+4. Print agent báo tình trạng máy Instax lên máy chủ mỗi phút và sau mỗi lần in. Máy chụp chỉ cho chọn khổ
+   Instax khi máy in còn kết nối và còn ít nhất 2 tấm phim, và không cho chọn quá số phim còn lại; quản trị
+   xem số phim / pin ở **Quản lý máy**. Lệnh in kiểm tra đủ phim trước khi in tấm đầu; tấm nào máy in không
+   xác nhận thì dừng và báo nhân viên xem khay trước khi bấm In lại (không tự in lại để tránh in trùng).
+
+Khung Instax: Quản trị → Khung ảnh → Thêm mới → **Size Instax** (ảnh 1200 × 1600, dọc 3 : 4). Mỗi tấm in là
+ảnh 600 × 800 (`scripts/instax-bridge.py` thu nhỏ / nén vừa giới hạn của máy in).
+
 Tùy chọn phục vụ cả frontend đã build: đặt `FRONTEND_DIST=../photobooth-fe/dist` và
 `CLIENT_URL=http://localhost:8080` trong `.env` rồi khởi động lại.
 

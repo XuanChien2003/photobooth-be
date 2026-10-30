@@ -10,15 +10,20 @@ settingsRouter.get("/", admin, async (req, res) =>
   res.json((await Setting.findOne({ key: "studio" }))?.value || {}),
 );
 
-// Only the extra-sheet price, set from the "Bán thêm tờ in" dialog (admins only); the rest of the
-// studio settings are left exactly as they are.
+// Only the extra-sheet prices (admins only): a 10 × 15 sheet and an Instax mini print. The rest of
+// the studio settings are left exactly as they are.
 settingsRouter.put("/extra-print-price", admin, async (req, res) => {
-  const { extraPrintPrice } = z
-    .object({ extraPrintPrice: priceVND(10_000_000) })
+  const prices = z
+    .object({
+      extraPrintPrice: priceVND(10_000_000).optional(),
+      extraInstaxPrice: priceVND(10_000_000).optional(),
+    })
+    .refine((v) => v.extraPrintPrice !== undefined || v.extraInstaxPrice !== undefined, "Vui lòng nhập giá in thêm.")
     .parse(req.body);
   const saved = await Setting.findOneAndUpdate(
     { key: "studio" },
-    { $set: { "value.extraPrintPrice": extraPrintPrice } },
+    { $set: Object.fromEntries(Object.entries(prices).filter(([, v]) => v !== undefined)
+      .map(([key, v]) => [`value.${key}`, v])) },
     { upsert: true, new: true },
   );
   res.json(saved.value);
@@ -121,6 +126,7 @@ settingsRouter.put("/", admin, async (req, res) => {
         .default(""),
       // Giá bán thêm 1 tờ in 15 × 10 cm tại quầy (0 = chưa bán lẻ).
       extraPrintPrice: priceVND(10_000_000).optional(),
+      extraInstaxPrice: priceVND(10_000_000).optional(),
     })
     // Thông tin chuyển khoản: nhập thì nhập đủ cả 3 ô.
     .refine(

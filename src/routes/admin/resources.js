@@ -4,6 +4,7 @@ import { z } from "zod";
 import { User, Room, Package, Frame, Sticker } from "../../models/index.js";
 import { admin, isAdmin, staffBranch, STAFF_PERMISSIONS } from "../../middleware/auth.js";
 import { fail, id, text, priceVND } from "../validation.js";
+import { leastSheets } from "../print-count.js";
 import { moveFrame, withFrameCatalogLock } from "../../services/frame-order.js";
 import {
   FRAME_LIST_FIELDS,
@@ -66,7 +67,7 @@ const resources = {
       shots: z.number().int().min(1).max(40).default(12),
       countdownSeconds: z.number().int().min(1).max(30).default(10),
       selectCount: z.number().int().min(1).max(12).default(4),
-      printSize: z.enum(["full", "strip"]).default("full"),
+      printSize: z.enum(["full", "strip", "instax"]).default("full"),
       prints: z.number().int().min(0).max(20),
       branches: z
         .array(z.string().trim().min(1).max(200))
@@ -74,6 +75,16 @@ const resources = {
         .default([])
         .transform((items) => [...new Set(items)]),
       active,
+    }).superRefine((pack, ctx) => {
+      // Khách in tối thiểu 2 tờ: khổ nhỏ 1 tờ 10 × 15 cắt đôi, khổ to 2 tờ, Instax 2 tấm.
+      if (pack.prints < leastSheets(pack.printSize))
+        ctx.addIssue({
+          code: "custom",
+          path: ["prints"],
+          message: pack.printSize === "strip"
+            ? "khổ nhỏ kèm ít nhất 1 tờ 10 × 15 (cắt đôi = 2 tờ nhỏ)"
+            : pack.printSize === "instax" ? "khổ Instax kèm ít nhất 2 tấm" : "khổ to kèm ít nhất 2 tờ",
+        });
     }),
   ],
   frames: [
@@ -83,7 +94,7 @@ const resources = {
       name: text,
       themeName: z.string().trim().max(100).default(""),
       order: z.number().int().min(0).max(999).default(0),
-      printSize: z.enum(["full", "strip"]).default("full"),
+      printSize: z.enum(["full", "strip", "instax"]).default("full"),
       // PNG tối đa 10 MB (≈ 13,4 triệu ký tự base64).
       image: z
         .string({ error: "Vui lòng import ảnh khung." })

@@ -289,7 +289,7 @@ export const openapi = {
         codeExpiresAt: str("Mã chụp hết hạn sau hai giờ kể từ paidAt", { format: "date-time" }),
         shots: int("Số ảnh được chụp của gói tại lúc bán"),
         countdownSeconds: int("Giây đếm ngược trước mỗi ảnh"),
-        printSize: enumOf(["full", "strip"]),
+        printSize: enumOf(["full", "strip", "instax"]),
         name: { type: "string" },
         phone: { type: "string" },
         status: enumOf(
@@ -367,7 +367,7 @@ export const openapi = {
           shots: int("Số ảnh bắt buộc chụp (1–40)", { example: 12 }),
           countdownSeconds: int("Giây đếm ngược trước mỗi ảnh (1–30)", { example: 10 }),
           selectCount: int("Số ảnh khách chọn để ghép khung trên máy chụp (1–12)", { example: 4 }),
-          printSize: enumOf(["full", "strip"]),
+          printSize: enumOf(["full", "strip", "instax"]),
           prints: int("Số tờ in kèm gói (0–20)", { example: 1 }),
           branches: { type: "array", items: { type: "string" }, description: "Chi nhánh áp dụng; để trống = mọi chi nhánh" },
           active: { type: "boolean", example: true },
@@ -379,7 +379,7 @@ export const openapi = {
           name: { type: "string", example: "Khung sinh nhật" },
           themeName: { type: "string", example: "" },
           order: { type: "integer", example: 0 },
-          printSize: enumOf(["full", "strip"]),
+          printSize: enumOf(["full", "strip", "instax"]),
           image: str("Ảnh khung PNG/JPG dạng data URL (≤ 3 MB)"),
           slots: {
             type: "array",
@@ -1046,14 +1046,18 @@ export const openapi = {
       post: {
         tags: ["Máy chụp (kiosk)"],
         summary: "Khách mua lượt chụp ngay tại máy (đút tiền) hoặc bỏ qua trả tiền ở chế độ thử",
-        description: "Phòng phải bật Thanh toán tại máy (payment = cash) hoặc Chế độ thử (paymentTest, skip = true). " +
-          "bills: các tờ tiền máy nhận tiền đã nhận; tổng phải ≥ giá gói. Gửi lại cùng requestKey trả đúng lượt chụp đã tạo.",
+        description: "Chỉ phòng đút tiền (payment = cash); skip = true cần thêm Chế độ thử (paymentTest). " +
+          "prints: số tờ 10 × 15 khách chọn (khổ nhỏ: 1 tờ cắt đôi = 2 tờ nhỏ), tối thiểu 2 tờ nhỏ hoặc 2 tờ lớn; " +
+          "tờ vượt số tờ của gói tính theo giá in thêm. bills: các tờ tiền máy nhận tiền đã nhận; tổng phải ≥ giá gói + tờ in thêm " +
+          "(409 nếu expectedTotal khác giá máy chủ và chưa đủ tiền). Gửi lại cùng requestKey trả đúng lượt chụp đã tạo.",
         requestBody: body({
           device: str("Mã máy chụp của phòng"),
           package: str("ID gói chụp"),
           requestKey: uuid,
           skip: bool("Bỏ qua trả tiền (chế độ thử, không tính doanh thu)"),
           bills: { type: "array", items: object({ amount: int("Mệnh giá (VND)"), at: str("Thời điểm nhận (ISO)") }, ["amount"]) },
+          prints: int("Số tờ 10 × 15 khách chọn; không gửi = mức tối thiểu của gói"),
+          expectedTotal: int("Tổng tiền máy chụp đang hiển thị"),
         }, ["device", "package", "requestKey"]),
         responses: { ...ok("Lượt chụp đã mở: { booking, accessToken, captureToken, flip }", { type: "object" }, 201), ...errors(400, 403, 409, 429) },
       },
@@ -1093,9 +1097,11 @@ export const openapi = {
     "/api/kiosk/ping": {
       post: {
         tags: ["Máy chụp (kiosk)"],
-        summary: "Máy chụp báo còn mở (mỗi phút), nhận tên phòng và chế độ lật ảnh",
+        summary: "Máy chụp báo còn mở (mỗi phút), nhận tên phòng, chế độ lật ảnh và cách trả tiền",
+        description: "payment là loại phòng: counter = phòng nhập mã (Chạm → nhập mã), cash = phòng đút tiền (Chạm → khổ ảnh → số bản in → đút tiền). " +
+          "cashCheckoutReady = máy chủ nhận bán lượt chụp tại máy cho phòng này.",
         requestBody: body({ device: str("Mã máy chụp của phòng") }, ["device"]),
-        responses: { ...ok("{ room: { _id, name, branch, flip } }"), ...errors(400, 403) },
+        responses: { ...ok("{ room: { _id, name, branch, flip, payment, paymentTest, cashCheckoutReady } }"), ...errors(400, 403) },
       },
     },
     "/api/kiosk/claim": {
@@ -1104,7 +1110,7 @@ export const openapi = {
         summary: "Khách nhập mã vé ở máy chụp",
         description:
           "`device` lấy từ POST /api/admin/rooms/{id}/device. Vé đã chụp xong thì trả `completed: true` để hiện lại QR. " +
-          "Gói chụp, khổ ảnh và số tờ in lấy từ vé đã thanh toán ở quầy; kiosk không bán thêm.",
+          "Mã do nhân viên tạo ở quầy sau khi khách chuyển khoản; gói chụp, khổ ảnh và số tờ in lấy từ vé đó. Nhập đúng là vào chụp luôn.",
         requestBody: body(
           {
             code: str("Mã vé 6 số", { pattern: "^\\d{6}$" }),

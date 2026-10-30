@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { config, root } from "../src/config.js";
 import { printCups, run } from "./print-cups.js";
+import { createInstaxPrinter, instaxStatus, printInstaxJob } from "./instax-printer.js";
 
 const api = (process.env.PRINT_AGENT_API_URL || "").replace(/\/$/, "");
 const branch = (process.env.PRINT_AGENT_BRANCH || "").trim();
@@ -10,6 +11,16 @@ const token = config.printAgentToken;
 const mac = process.platform === "darwin";
 if (!(mac || process.platform === "win32") || !/^https:\/\//.test(api) || !branch || token.length < 32)
   throw new Error("Cần Windows hoặc macOS, PRINT_AGENT_API_URL (HTTPS), PRINT_AGENT_BRANCH và PRINT_AGENT_TOKEN dài ít nhất 32 ký tự.");
+
+// Máy Instax mini Link 3 cạnh máy chụp (Bluetooth Classic): INSTAX_ADDRESS là địa chỉ của máy in,
+// INSTAX_PYTHON là python của virtualenv đã cài instax-sdk.
+const instaxAddress = (process.env.INSTAX_ADDRESS || "").trim();
+const instax = instaxAddress
+  ? createInstaxPrinter({ address: instaxAddress, python: process.env.INSTAX_PYTHON || "python" })
+  : null;
+// Khổ máy in cạnh agent này in được; chưa cấu hình máy nào thì nhận mọi lệnh (và báo thiếu cấu hình).
+const printSizes = [...(config.dnpPrinter ? ["full", "strip"] : []), ...(instax ? ["instax"] : [])];
+const STATUS_EVERY_MS = 60_000;
 
 const headers = { Authorization: `Bearer ${token}` };
 async function call(endpoint, options = {}) {
@@ -20,7 +31,22 @@ async function call(endpoint, options = {}) {
   if (!response.ok) throw new Error(`Print API ${response.status} tại ${endpoint}`);
   return response;
 }
-async function print(job) {
+const post = (endpoint, body) => call(endpoint, { method: "POST",
+  headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+async function download(job, directory) {
+  const files = [];
+  for (const sheet of job.sheets) {
+    const response = await call(`/jobs/${job.id}/sheets/${sheet.index}`, {
+      headers: { "X-Print-Lease": job.leaseId },
+    });
+    const file = path.join(directory, `${sheet.index}.${sheet.extension}`);
+    await fs.writeFile(file, Buffer.from(await response.arrayBuffer()));
+    files.push(file);
+  }
+  return files;
+}
+async function printDnp(job, files) {
   // Khung nhỏ (2 dải trên một tờ 4x6) in qua hàng in "2inch cut" để máy cắt đôi; chưa tạo hàng in đó
   // thì in qua hàng in chính (nhân viên tự cắt) thay vì bỏ lệnh in của khách.
   const strip = job.printSize === "strip";
@@ -29,24 +55,24 @@ async function print(job) {
   const printer = strip ? config.dnpStripPrinter || config.dnpPrinter : config.dnpPrinter;
   if (!printer)
     throw new Error("Thiếu DNP_PRINTER_NAME (tên máy in DNP trong Windows / trên Mac) trong file .env của print agent.");
+  const sheets = files.map((file) => ({ file, copies: job.copies }));
+  if (mac) await printCups(printer, sheets);
+  else {
+    const manifest = path.join(path.dirname(files[0]), "manifest.json");
+    await fs.writeFile(manifest, JSON.stringify(sheets.flatMap(({ file, copies }) => Array(copies).fill(file))));
+    await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-File",
+      path.join(root, "scripts", "print-dnp.ps1"), "-PrinterName", printer, "-Manifest", manifest]);
+  }
+}
+async function print(job) {
+  if (job.printSize === "instax" && !instax)
+    throw new Error("Thiếu INSTAX_ADDRESS (địa chỉ Bluetooth máy Instax) trong file .env của print agent.");
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "photo-agent-"));
   try {
-    const sheets = [];
-    for (const sheet of job.sheets) {
-      const response = await call(`/jobs/${job.id}/sheets/${sheet.index}`, {
-        headers: { "X-Print-Lease": job.leaseId },
-      });
-      const file = path.join(directory, `${sheet.index}.${sheet.extension}`);
-      await fs.writeFile(file, Buffer.from(await response.arrayBuffer()));
-      sheets.push({ file, copies: job.copies });
-    }
-    if (mac) await printCups(printer, sheets);
-    else {
-      const manifest = path.join(directory, "manifest.json");
-      await fs.writeFile(manifest, JSON.stringify(sheets.flatMap(({ file, copies }) => Array(copies).fill(file))));
-      await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-File",
-        path.join(root, "scripts", "print-dnp.ps1"), "-PrinterName", printer, "-Manifest", manifest]);
-    }
+    const files = await download(job, directory);
+    if (job.printSize !== "instax") return await printDnp(job, files);
+    const { printed, film } = await printInstaxJob(instax, files.flatMap((file) => Array(job.copies).fill(file)));
+    return `Đã in ${printed} tấm ra máy Instax${Number.isInteger(film) ? ` · còn ${film} tấm phim` : ""}.`;
   } finally {
     const resolved = path.resolve(directory);
     if (path.dirname(resolved) === path.resolve(os.tmpdir()) &&
@@ -55,30 +81,40 @@ async function print(job) {
   }
 }
 
+let statusAt = 0;
+async function reportStatus() {
+  if (!instax) return;
+  statusAt = Date.now();
+  const state = await instaxStatus(instax);
+  await post("/status", { branch, instax: state });
+  if (!state.connected) console.warn(state.message);
+}
+
 async function cycle() {
-  const { job } = await (await call("/claim", { method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ branch }) })).json();
+  const { job } = await (await post("/claim", { branch, ...(printSizes.length && { printSizes }) })).json();
   if (!job) return false;
   let sent = false, message = "";
   try {
-    await print(job);
+    message = (await print(job)) || "";
     sent = true;
-    console.log(`Đã gửi lệnh ${job.id} đến hàng in ${mac ? "của Mac" : "Windows"}.`);
+    console.log(`Lệnh ${job.id}: ${message || `đã gửi đến hàng in ${mac ? "của Mac" : "Windows"}.`}`);
   } catch (error) {
     message = error.message;
     console.error(`Lệnh ${job.id} thất bại: ${message}`);
   }
-  await call(`/jobs/${job.id}/complete`, { method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ leaseId: job.leaseId, sent, message: message.slice(0, 500) }) });
+  await post(`/jobs/${job.id}/complete`, { leaseId: job.leaseId, sent, message: message.slice(0, 500) });
+  // Số phim vừa đổi: báo ngay để máy chụp không bán khi đã hết phim.
+  if (job.printSize === "instax") await reportStatus().catch(() => {});
   return true;
 }
 
-console.log(`Print agent đang theo dõi chi nhánh ${branch}.`);
+console.log(`Print agent đang theo dõi chi nhánh ${branch}${printSizes.length ? ` (khổ: ${printSizes.join(", ")})` : ""}.`);
 do {
   try { await cycle(); }
   catch (error) { console.error(`Không thể nhận lệnh in: ${error.message}`); }
+  if (instax && Date.now() - statusAt >= STATUS_EVERY_MS)
+    await reportStatus().catch((error) => console.error(`Không báo được tình trạng máy Instax: ${error.message}`));
   if (process.env.PRINT_AGENT_ONCE === "1") break;
   await new Promise((resolve) => setTimeout(resolve, 4000));
 } while (true);
+instax?.close();

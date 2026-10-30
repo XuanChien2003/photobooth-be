@@ -6,7 +6,9 @@ import mongoose from "mongoose";
 import sharp from "sharp";
 import { z } from "zod";
 import { config } from "../config.js";
-import { Booking, Room, Package, KioskAttempt } from "../models/index.js";
+import { Booking, Room, Package, KioskAttempt, Setting } from "../models/index.js";
+import { extraPriceFor, minSheets, piecesPerSheet, saleTotal } from "./print-count.js";
+import { instaxState, readPrinterStatus } from "../services/printer-status.js";
 import { appendCapture, finishCapture } from "../services/capture.js";
 import { timed } from "../services/image-save-queue.js";
 import { directUploadRequest, photoBody, readPhotoUpload, storedOriginal } from "./photo-upload.js";
@@ -71,9 +73,14 @@ kioskRouter.post("/ping", async (req, res) => {
     { returnDocument: "after", projection: { name: 1, branch: 1, flip: 1, payment: 1, paymentTest: 1 } },
   );
   if (!room) fail(403, "Phòng chụp đã ngừng hoạt động.");
+  const printers = await readPrinterStatus(room.branch);
   res.json({ room: {
     _id: room._id, name: room.name, branch: room.branch, flip: room.flip || "device",
     payment: room.payment || "counter", paymentTest: Boolean(room.paymentTest),
+    // Phòng đút tiền: máy chụp bán lượt tại máy (chọn gói, số tờ in rồi đút tiền).
+    cashCheckoutReady: room.payment === "cash",
+    // Máy in Instax cạnh máy chụp: khổ Instax chỉ mở khi máy in sẵn sàng và đủ phim.
+    printers: { instax: instaxState(printers) },
   } });
 });
 
@@ -90,9 +97,9 @@ async function deviceRoom(token) {
   return room;
 }
 
-// Khách tự mua lượt chụp tại máy: chọn gói, đút tiền vào máy nhận tiền (máy chụp gửi từng tờ đã
-// nhận) rồi vào chụp luôn — không cần mã ở quầy. Chế độ thử (paymentTest) cho bỏ qua bước trả tiền
-// để thử máy khi chưa lắp máy nhận tiền: vé thử không tính doanh thu.
+// Khách tự mua lượt chụp tại máy: chọn gói, số tờ in, đút tiền vào máy nhận tiền (máy chụp gửi
+// từng tờ đã nhận) rồi vào chụp luôn — không cần mã ở quầy. Chế độ thử (paymentTest) cho bỏ qua
+// bước trả tiền để thử máy khi chưa lắp máy nhận tiền: vé thử không tính doanh thu.
 kioskRouter.post("/sale", sensitive(), async (req, res) => {
   const d = z.object({
     device: z.string().max(2000),
@@ -103,6 +110,10 @@ kioskRouter.post("/sale", sensitive(), async (req, res) => {
       amount: z.number().int().min(1000).max(10_000_000),
       at: z.string().datetime().optional(),
     })).max(100).default([]),
+    // Số tờ 10 × 15 khách chọn (khổ nhỏ: 1 tờ cắt đôi = 2 tờ nhỏ); không gửi = mức tối thiểu của gói.
+    prints: z.number().int().min(0).max(60).optional(),
+    // Tổng tiền máy chụp đang hiển thị: khác giá máy chủ (vừa đổi giá) thì báo để khách gọi nhân viên.
+    expectedTotal: z.number().int().nonnegative().optional(),
   }).parse(req.body);
   const room = await deviceRoom(d.device);
   // Gửi lại sau khi mất phản hồi: trả đúng lượt chụp đã tạo, không thu tiền lần nữa.
@@ -112,17 +123,33 @@ kioskRouter.post("/sale", sensitive(), async (req, res) => {
     if (!existing.captureSession) fail(409, "Lượt chụp này đã kết thúc.");
     return res.json(saleSession(existing, room, existing.captureSession));
   }
-  if (d.skip ? !room.paymentTest : room.payment !== "cash")
-    fail(403, d.skip
-      ? "Máy chụp chưa bật chế độ thử (bỏ qua trả tiền). Bật ở Quản trị → Quản lý máy."
-      : "Máy chụp này chưa bật thanh toán tại máy. Bật ở Quản trị → Quản lý máy.");
+  if (room.payment !== "cash")
+    fail(403, "Đây là phòng nhập mã — khách chuyển khoản ở quầy rồi nhập mã. Đổi loại phòng ở Quản trị → Quản lý máy.");
+  if (d.skip && !room.paymentTest)
+    fail(403, "Phòng chưa bật chế độ thử (bỏ qua đút tiền). Bật ở Quản trị → Quản lý máy.");
   const pack = await Package.findOne({ _id: d.package, active: true });
   if (!pack) fail(400, "Gói chụp không còn hoạt động.");
   if (pack.branches?.length && !pack.branches.includes(room.branch))
     fail(400, `Gói “${pack.name}” không áp dụng tại chi nhánh ${room.branch}.`);
+  const least = minSheets(pack);
+  const sheets = d.prints ?? least;
+  if (sheets < least)
+    fail(400, `Gói “${pack.name}” in tối thiểu ${least * piecesPerSheet(pack.printSize)} tờ.`);
+  if (sheets - least > 20) fail(400, "Mỗi lượt in thêm tối đa 20 tờ.");
+  let extraPrintPrice = 0;
+  if (sheets > (Number(pack.prints) || 0)) {
+    extraPrintPrice = extraPriceFor(pack.printSize, (await Setting.findOne({ key: "studio" }).lean())?.value);
+    if (extraPrintPrice === undefined && sheets > least)
+      fail(400, "Chưa đặt giá in thêm — nhờ nhân viên đặt ở Quản trị → Khổ ảnh & bảng giá.");
+  }
+  const total = saleTotal(pack, sheets, extraPrintPrice);
   const received = d.bills.reduce((sum, bill) => sum + bill.amount, 0);
-  if (!d.skip && received < pack.price)
-    fail(400, `Chưa đủ tiền: đã nhận ${received.toLocaleString("vi-VN")} đ, gói ${pack.price.toLocaleString("vi-VN")} đ.`);
+  if (!d.skip && received < total)
+    fail(
+      d.expectedTotal !== undefined && d.expectedTotal !== total ? 409 : 400,
+      `Chưa đủ tiền: đã nhận ${received.toLocaleString("vi-VN")} đ, cần ${total.toLocaleString("vi-VN")} đ.` +
+        (d.expectedTotal !== undefined && d.expectedTotal !== total ? " Giá vừa thay đổi — nhờ nhân viên hỗ trợ." : ""),
+    );
   const sessionId = token();
   const now = new Date();
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -141,8 +168,8 @@ kioskRouter.post("/sale", sensitive(), async (req, res) => {
         selectCount: pack.selectCount || 4,
         printSize: pack.printSize || "full",
         captureDuration: pack.duration,
-        prints: pack.prints,
-        total: d.skip ? 0 : pack.price,
+        prints: sheets,
+        total: d.skip ? 0 : total,
         discount: 0,
         source: "kiosk",
         date: today(),

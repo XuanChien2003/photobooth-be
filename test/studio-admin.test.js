@@ -235,19 +235,23 @@ test("kiosks report online with the remote flip mode; packages can be limited to
   const { token } = (await staff.post(`/api/admin/rooms/${room._id}/device`).expect(200)).body;
   await request(app).post("/api/kiosk/ping").send({ device: "bad" }).expect(403);
   const ping = (await request(app).post("/api/kiosk/ping").send({ device: token }).expect(200)).body;
-  assert.deepEqual(ping.room, { _id: String(room._id), name: "Máy 1", branch: "Bắc Giang", flip: "off", payment: "counter", paymentTest: false });
+  assert.deepEqual(ping.room, {
+    _id: String(room._id), name: "Máy 1", branch: "Bắc Giang", flip: "off", payment: "counter", paymentTest: false,
+    cashCheckoutReady: false,
+    printers: { instax: { ready: false, film: null, message: "Máy in Instax chưa kết nối với máy tính." } },
+  });
   const listed = (await admin.get("/api/admin/rooms").expect(200)).body.find((r) => r._id === String(room._id));
   assert.ok(Date.now() - new Date(listed.lastSeenAt) < 60000);
   assert.equal(listed.flip, "off");
 
   await admin.put(`/api/admin/packages/${pack._id}`).send({
-    name: "Gói 1", description: "", price: 100000, duration: 10, prints: 1, branches: ["Hà Nội"], active: true,
+    name: "Gói 1", description: "", price: 100000, duration: 10, prints: 2, branches: ["Hà Nội"], active: true,
   }).expect(200);
   const draft = { name: "Khách", phone: "", room: "", branch: "", package: String(pack._id), requestKey: randomUUID() };
   const refused = await staff.post("/api/admin/tickets/draft").send(draft).expect(400);
   assert.match(refused.body.message, /không áp dụng tại chi nhánh Bắc Giang/);
   await admin.put(`/api/admin/packages/${pack._id}`).send({
-    name: "Gói 1", description: "", price: 100000, duration: 10, prints: 1, branches: [], active: true,
+    name: "Gói 1", description: "", price: 100000, duration: 10, prints: 2, branches: [], active: true,
   }).expect(200);
   await staff.post("/api/admin/tickets/draft").send({ ...draft, requestKey: randomUUID() }).expect(201);
   await Booking.deleteMany({});
@@ -255,10 +259,10 @@ test("kiosks report online with the remote flip mode; packages can be limited to
 
 test("packages snapshot how many photos the guest picks; the kiosk uploads one timelapse video per session", async () => {
   await admin.put(`/api/admin/packages/${pack._id}`).send({
-    name: "Gói 1", description: "", price: 100000, duration: 10, prints: 1, selectCount: 6, active: true,
+    name: "Gói 1", description: "", price: 100000, duration: 10, prints: 2, selectCount: 6, active: true,
   }).expect(200);
   await admin.put(`/api/admin/packages/${pack._id}`).send({
-    name: "Gói 1", description: "", price: 100000, duration: 10, prints: 1, selectCount: 40, active: true,
+    name: "Gói 1", description: "", price: 100000, duration: 10, prints: 2, selectCount: 40, active: true,
   }).expect(400);
   const draft = (await staff.post("/api/admin/tickets/draft").send({
     name: "Khách", phone: "", room: "", branch: "", package: String(pack._id), requestKey: randomUUID(),
@@ -299,12 +303,21 @@ test("guests can buy a session at the kiosk with cash; test mode skips payment w
   const sale = (extra) => ({ device: token, package: String(pack._id), requestKey: randomUUID(), ...extra });
   await request(app).post("/api/kiosk/sale").send(sale({ bills: [{ amount: 100000 }] })).expect(403);
   await request(app).post("/api/kiosk/sale").send(sale({ skip: true })).expect(403);
+  // Phòng nhập mã: chế độ thử không biến nó thành phòng đút tiền.
+  await admin.put(`/api/admin/rooms/${room._id}`).send({
+    name: "Máy 1", description: "", branch: "Bắc Giang", payment: "counter", paymentTest: true, active: true,
+  }).expect(200);
+  const codeRoom = (await request(app).post("/api/kiosk/ping").send({ device: token }).expect(200)).body.room;
+  assert.equal(codeRoom.cashCheckoutReady, false);
+  const refused = await request(app).post("/api/kiosk/sale").send(sale({ skip: true })).expect(403);
+  assert.match(refused.body.message, /phòng nhập mã/);
   await admin.put(`/api/admin/rooms/${room._id}`).send({
     name: "Máy 1", description: "", branch: "Bắc Giang", payment: "cash", paymentTest: true, active: true,
   }).expect(200);
   const ping = (await request(app).post("/api/kiosk/ping").send({ device: token }).expect(200)).body.room;
   assert.equal(ping.payment, "cash");
   assert.equal(ping.paymentTest, true);
+  assert.equal(ping.cashCheckoutReady, true);
   const short = await request(app).post("/api/kiosk/sale").send(sale({ bills: [{ amount: 50000 }] })).expect(400);
   assert.match(short.body.message, /Chưa đủ tiền/);
   const paid = sale({ bills: [{ amount: 50000 }, { amount: 100000 }] });
@@ -319,6 +332,7 @@ test("guests can buy a session at the kiosk with cash; test mode skips payment w
   assert.equal(stored.cashReceived, 150000);
   assert.equal(stored.paymentMethod, "cash");
   assert.equal(stored.source, "kiosk");
+  assert.equal(stored.prints, 2, "no print count sent: the package's sheets");
   await request(app).post("/api/kiosk/start").send({ captureToken: first.captureToken }).expect(200);
   const test = (await request(app).post("/api/kiosk/sale").send(sale({ skip: true })).expect(201)).body;
   const free = await Booking.findById(test.booking._id).lean();
@@ -328,6 +342,91 @@ test("guests can buy a session at the kiosk with cash; test mode skips payment w
   const summary = (await admin.get(`/api/admin/stats/summary?from=${day}&to=${day}`).expect(200)).body;
   assert.equal(summary.orders, 1, "test sessions are not orders");
   assert.equal(summary.revenue, 100000);
+
+  // Số tờ khách chọn: dưới mức tối thiểu bị từ chối; tờ thêm tính theo giá in thêm.
+  const below = await request(app).post("/api/kiosk/sale").send(sale({ prints: 1, bills: [{ amount: 200000 }] })).expect(400);
+  assert.match(below.body.message, /in tối thiểu 2 tờ/);
+  const unpriced = await request(app).post("/api/kiosk/sale").send(sale({ prints: 3, bills: [{ amount: 200000 }] })).expect(400);
+  assert.match(unpriced.body.message, /Chưa đặt giá in thêm/);
+  await admin.put("/api/admin/settings/extra-print-price").send({ extraPrintPrice: 15000 }).expect(200);
+  const short3 = await request(app).post("/api/kiosk/sale").send(sale({ prints: 3, bills: [{ amount: 100000 }] })).expect(400);
+  assert.match(short3.body.message, /cần 115\.000 đ/);
+  await request(app).post("/api/kiosk/sale")
+    .send(sale({ prints: 3, expectedTotal: 110000, bills: [{ amount: 110000 }] })).expect(409);
+  const extra = (await request(app).post("/api/kiosk/sale")
+    .send(sale({ prints: 3, expectedTotal: 115000, bills: [{ amount: 100000 }, { amount: 20000 }] })).expect(201)).body;
+  const extraStored = await Booking.findById(extra.booking._id).lean();
+  assert.equal(extraStored.prints, 3);
+  assert.equal(extraStored.total, 115000);
+  assert.equal(extraStored.cashReceived, 120000);
+  await Setting.updateOne({ key: "studio" }, { $unset: { "value.extraPrintPrice": 1 } });
+  await Booking.deleteMany({});
+});
+
+test("packages print at least two pieces: one strip sheet cut in half, or two full sheets", async () => {
+  const base = { name: "Gói 1", description: "", price: 100000, duration: 10, active: true };
+  const full = await admin.put(`/api/admin/packages/${pack._id}`).send({ ...base, printSize: "full", prints: 1 }).expect(400);
+  assert.match(full.body.message, /Số tờ in: khổ to kèm ít nhất 2 tờ/);
+  const strip = await admin.put(`/api/admin/packages/${pack._id}`).send({ ...base, printSize: "strip", prints: 0 }).expect(400);
+  assert.match(strip.body.message, /khổ nhỏ kèm ít nhất 1 tờ/);
+  await admin.put(`/api/admin/packages/${pack._id}`).send({ ...base, printSize: "strip", prints: 1 }).expect(200);
+  await admin.put(`/api/admin/packages/${pack._id}`).send({ ...base, printSize: "full", prints: 2 }).expect(200);
+});
+
+test("Instax: two prints minimum, its own extra price, and the kiosk sells it only while the printer is ready", async () => {
+  const base = { name: "Gói Instax", description: "", price: 120000, duration: 10, active: true, printSize: "instax" };
+  const one = await admin.put(`/api/admin/packages/${pack._id}`).send({ ...base, prints: 1 }).expect(400);
+  assert.match(one.body.message, /khổ Instax kèm ít nhất 2 tấm/);
+  await admin.put(`/api/admin/packages/${pack._id}`).send({ ...base, prints: 2 }).expect(200);
+  await admin.put(`/api/admin/rooms/${room._id}`).send({
+    name: "Máy 1", description: "", branch: "Bắc Giang", payment: "cash", paymentTest: false, active: true,
+  }).expect(200);
+  const { token } = (await staff.post(`/api/admin/rooms/${room._id}/device`).expect(200)).body;
+  const instax = async () => (await request(app).post("/api/kiosk/ping").send({ device: token }).expect(200)).body.room.printers.instax;
+  assert.equal((await instax()).ready, false);
+
+  const previous = config.printAgentToken;
+  config.printAgentToken = randomUUID() + randomUUID();
+  const agent = (body) => request(app).post("/api/print-agent/status")
+    .set("Authorization", `Bearer ${config.printAgentToken}`).send(body);
+  try {
+    await request(app).post("/api/print-agent/status").send({ branch: "Bắc Giang" }).expect(403);
+    await agent({ branch: "Bắc Giang", instax: { connected: true, film: 1, battery: 80 } }).expect(200);
+    assert.deepEqual({ ...(await instax()), at: undefined },
+      { ready: false, film: 1, battery: 80, charging: false, at: undefined, message: "Máy Instax chỉ còn 1 tấm phim." });
+    await agent({ branch: "Bắc Giang", instax: { connected: false, message: "Không kết nối được máy Instax" } }).expect(200);
+    assert.equal((await instax()).message, "Không kết nối được máy Instax");
+    await agent({ branch: "Bắc Giang", instax: { connected: true, film: 8, battery: 60, charging: true } }).expect(200);
+    const ready = await instax();
+    assert.equal(ready.ready, true);
+    assert.equal(ready.film, 8);
+    const listed = (await staff.get("/api/admin/print-jobs/printers").expect(200)).body;
+    assert.deepEqual(listed.map((row) => [row.branch, row.instax.ready, row.instax.film]), [["Bắc Giang", true, 8]]);
+    // Báo cũ hơn 3 phút: print agent đã tắt, không bán khổ Instax nữa.
+    await Setting.collection.updateOne({ key: "printers:Bắc Giang" }, { $set: { "value.at": new Date(Date.now() - 4 * 60000) } });
+    assert.match((await instax()).message, /không báo về/);
+  } finally {
+    config.printAgentToken = previous;
+    await Setting.collection.deleteOne({ key: "printers:Bắc Giang" });
+  }
+
+  // Tấm Instax thêm tính theo giá in thêm Instax, không theo giá tờ 10 × 15.
+  await admin.put("/api/admin/settings/extra-print-price").send({}).expect(400);
+  await admin.put("/api/admin/settings/extra-print-price").send({ extraPrintPrice: 15000, extraInstaxPrice: 25000 }).expect(200);
+  await admin.put("/api/admin/settings/extra-print-price").send({ extraInstaxPrice: 30000 }).expect(200);
+  const prices = (await request(app).get("/api/catalog").expect(200)).body.settings;
+  assert.deepEqual([prices.extraPrintPrice, prices.extraInstaxPrice], [15000, 30000]);
+  const sale = { device: token, package: String(pack._id), requestKey: randomUUID(), prints: 3 };
+  const short = await request(app).post("/api/kiosk/sale").send({ ...sale, bills: [{ amount: 140000 }] }).expect(400);
+  assert.match(short.body.message, /cần 150\.000 đ/);
+  const sold = (await request(app).post("/api/kiosk/sale")
+    .send({ ...sale, requestKey: randomUUID(), bills: [{ amount: 100000 }, { amount: 50000 }] }).expect(201)).body;
+  const stored = await Booking.findById(sold.booking._id).lean();
+  assert.deepEqual([stored.printSize, stored.prints, stored.total], ["instax", 3, 150000]);
+
+  await Setting.updateOne({ key: "studio" }, { $unset: { "value.extraPrintPrice": 1, "value.extraInstaxPrice": 1 } });
+  await admin.put(`/api/admin/packages/${pack._id}`)
+    .send({ ...base, name: "Gói 1", price: 100000, printSize: "full", prints: 2 }).expect(200);
   await Booking.deleteMany({});
 });
 

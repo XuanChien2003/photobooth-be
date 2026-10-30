@@ -24,6 +24,7 @@ import {
   Setting,
   Booking,
   PrintJob,
+  Sticker,
 } from "../src/models/index.js";
 
 const memory = await MongoMemoryServer.create();
@@ -85,6 +86,16 @@ await Frame.create({
     { x: 0.1, y: 0.1, w: 0.8, h: 0.6 },
     { x: 0.1, y: 0.75, w: 0.8, h: 0.15 },
   ],
+  active: true,
+});
+// Nhãn dán của tiệm (vuông xanh 120 px): máy chụp tải ảnh qua /api/stickers/:id/image rồi vẽ lên ảnh in.
+const STICKER_BLUE = [30, 60, 220];
+await Sticker.create({
+  name: "Ngôi sao xanh",
+  image: `data:image/png;base64,${(await sharp({
+    create: { width: 120, height: 120, channels: 4, background: { r: 30, g: 60, b: 220, alpha: 1 } },
+  }).png().toBuffer()).toString("base64")}`,
+  order: 0,
   active: true,
 });
 await Setting.create({
@@ -373,22 +384,20 @@ try {
     0,
     "Không có nút chụp trên màn hình: chỉ chụp bằng máy ảnh",
   );
-  await kiosk.getByRole("button", { name: "Chạm để bắt đầu" }).click();
-  await kiosk.getByRole("heading", { name: "Nhập mã chụp" }).waitFor();
   await kiosk.getByText("Cài đặt máy chụp (nhân viên)").click();
   await kiosk.getByRole("button", { name: /Chọn thư mục ảnh/ }).click();
   await kiosk
     .getByText(/Đã chọn thư mục ảnh “X Acquire”/)
     .first()
     .waitFor();
+  // Phòng nhập mã: Chạm để bắt đầu → nhập mã (khách đã chuyển khoản ở quầy) → vào chụp luôn.
+  await kiosk.getByRole("button", { name: "Chạm để bắt đầu" }).click();
+  await kiosk.getByRole("heading", { name: "Nhập mã chụp" }).waitFor();
   await kiosk
-    .getByRole("textbox", { name: "Mã vé", exact: true })
+    .getByRole("textbox", { name: "Mã chụp", exact: true })
     .fill(booking.code);
   await kiosk.getByRole("button", { name: "Bắt đầu chụp" }).click();
-  // Chọn cách chụp: khách dùng dây bấm của máy ảnh (không có nút chụp trên màn hình).
-  const mode = kiosk.getByRole("dialog", { name: "Chọn cách chụp" });
-  await mode.waitFor();
-  await mode.getByRole("button", { name: /Bấm dây/ }).click();
+  // Khách chụp bằng dây bấm của máy ảnh (không có nút chụp trên màn hình).
   await kiosk.locator(".shoot-screen.phase-shoot").waitFor({ timeout: 20000 });
   assert.equal(
     await kiosk.getByRole("button", { name: "Chụp ảnh" }).count(),
@@ -403,8 +412,9 @@ try {
       .waitFor({ timeout: 20000 });
   }
   await kiosk.getByRole("button", { name: "Chụp xong, chọn ảnh" }).click();
-  // Chọn ảnh và khung trên cùng một màn: chọn đủ 2 tấm của gói rồi bấm In ảnh.
-  await kiosk.getByRole("heading", { name: /để chọn ảnh yêu thích/ }).waitFor();
+  // Chọn ảnh, màu ảnh và nhãn dán trên cùng một màn: chọn đủ 2 tấm của gói, chọn màu, dán nhãn dán
+  // của tiệm rồi bấm In ảnh.
+  await kiosk.getByRole("heading", { name: /để chọn ảnh & trang trí/ }).waitFor();
   const picks = kiosk
     .getByRole("group", { name: "Ảnh đã chụp" })
     .getByRole("button");
@@ -413,6 +423,16 @@ try {
   assert.equal(await print.isDisabled(), true, "Chọn đủ ảnh của gói mới được in");
   await picks.nth(0).click();
   await picks.nth(1).click();
+  // Chọn đủ ảnh: máy tự mở mục Màu ảnh.
+  await kiosk.getByRole("radio", { name: "Trắng đen" }).click();
+  await kiosk.getByRole("tab", { name: /Nhãn dán/ }).click();
+  await kiosk.getByRole("button", { name: "Thêm nhãn dán Ngôi sao xanh" }).click();
+  const decor = await kiosk.evaluate(() => {
+    const key = Object.keys(sessionStorage).find((k) => k.startsWith("photo-capture-"));
+    return JSON.parse(sessionStorage.getItem(key)).decor;
+  });
+  assert.equal(decor.filter, "mono");
+  assert.equal(decor.stickers.length, 1);
   await print.click();
   await kiosk.getByRole("heading", { name: /Quét QR để tải ảnh/ }).waitFor();
   await kiosk.getByRole("img", { name: "Ảnh đã ghép khung" }).waitFor();
@@ -428,6 +448,24 @@ try {
     return b.photos.length === 2 && b.composite?.file ? b : null;
   }, "ảnh gốc và ảnh ghép khung lên album");
   assert.deepEqual(album.photos.map((p) => p.number), [1, 2]);
+  // Ảnh ghép trên máy chủ đúng như khách thấy: ảnh trong ô trắng đen, nhãn dán vẫn xanh, viền khung
+  // giữ màu hồng.
+  {
+    const { data, info } = await sharp(await readMedia(album.composite.file))
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const color = (x, y) => {
+      const i = (Math.round(y * (info.height - 1)) * info.width + Math.round(x * (info.width - 1))) * info.channels;
+      return [data[i], data[i + 1], data[i + 2]];
+    };
+    const near = (actual, expected, label) =>
+      assert.ok(actual.every((v, i) => Math.abs(v - expected[i]) <= 24), `${label}: ${actual}`);
+    const [sticker] = decor.stickers;
+    near(color(sticker.u, sticker.v), STICKER_BLUE, "nhãn dán");
+    // Ảnh #7a9 qua Trắng đen ≈ xám 158.
+    near(color(0.15, 0.12), [158, 158, 158], "ảnh trắng đen");
+    near(color(0.03, 0.5), [246, 201, 214], "viền khung");
+  }
   // Video tua nhanh ghép từ hình trực tiếp (camera giả của trình duyệt), gửi lên sau ảnh ghép.
   const withVideo = await until(async () => {
     const b = await Booking.findById(booking._id);
@@ -488,22 +526,29 @@ try {
       .filter((href) => !href.includes(albumPath)),
     [],
   );
-  // Bản ghép máy chụp gửi lên: đúng cỡ khung và ô ảnh chứa ảnh khách chụp (xanh lục), không phải nền hồng.
+  // Bản ghép máy chụp gửi lên: đúng cỡ khung và ô ảnh chứa ảnh khách chụp (đã chọn Trắng đen: xám),
+  // không phải nền hồng. Điểm đo (0,2; 0,2) nằm ngoài chỗ nhãn dán có thể được dán (giữa khung).
   const composite = await phone.request.get(absolute(compositeHref));
   assert.equal(composite.status(), 200);
   assert.match(composite.headers()["content-type"], /image\/jpeg/);
   const compositeImage = Buffer.from(await composite.body());
   assert.equal((await sharp(compositeImage).metadata()).width, 1200);
   assert.equal((await sharp(compositeImage).metadata()).height, 1800);
-  const [red, green] = await pixel(compositeImage, 0.5, 0.4);
-  assert.ok(red < 170 && green > 140, `Ô ảnh chứa ảnh khách chụp, không phải nền khung: ${red},${green}`);
+  const [red, green, blue] = await pixel(compositeImage, 0.2, 0.2);
+  assert.ok(red < 170 && green > 140 && Math.abs(red - blue) < 20,
+    `Ô ảnh chứa ảnh khách chụp, không phải nền khung: ${red},${green},${blue}`);
   const [frameRed] = await pixel(compositeImage, 0.03, 0.4);
   assert.ok(frameRed > 220, "Viền khung giữ màu hồng");
   // Tờ in máy chụp gửi cho lễ tân giống bản ghép: ảnh khách nằm trong ô.
   const sheet = await phone.request.get(`${config.origin}${albumPath}/prints/${sent._id}`);
   assert.equal(sheet.status(), 200);
-  const [sheetRed, sheetGreen] = await pixel(Buffer.from(await sheet.body()), 0.5, 0.4);
-  assert.ok(sheetRed < 170 && sheetGreen > 140, "Ô ảnh trên tờ in chứa ảnh khách chụp");
+  const sheetImage = Buffer.from(await sheet.body());
+  const [sheetRed, sheetGreen, sheetBlue] = await pixel(sheetImage, 0.2, 0.2);
+  assert.ok(sheetRed < 170 && sheetGreen > 140 && Math.abs(sheetRed - sheetBlue) < 20,
+    "Ô ảnh trên tờ in chứa ảnh khách chụp, cùng màu Trắng đen");
+  // Tờ in có nhãn dán đúng chỗ khách dán.
+  const [stickerRed, , stickerBlue] = await pixel(sheetImage, decor.stickers[0].u, decor.stickers[0].v);
+  assert.ok(stickerBlue > 170 && stickerRed < 90, `Nhãn dán trên tờ in: ${stickerRed},${stickerBlue}`);
   // ZIP: đúng hai ảnh gốc của buổi chụp.
   const zip = await phone.request.get(absolute(zipHref));
   assert.equal(zip.status(), 200);

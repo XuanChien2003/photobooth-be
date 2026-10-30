@@ -11,7 +11,7 @@ const printJobSchema = new Schema(
     branch: String,
     copies: Number,
     frameName: String,
-    printSize: { type: String, enum: ["full", "strip"], default: "full" },
+    printSize: { type: String, enum: ["full", "strip", "instax"], default: "full" },
     file: String,
     sheets: [{ file: String, width: Number, height: Number }],
     requestKey: { type: String, unique: true, sparse: true },

@@ -9,7 +9,8 @@ import { printExtension } from "./print-image.js";
 import { config, root } from "../config.js";
 let queue = Promise.resolve();
 export function dispatchPrint(job) {
-  if (!config.dnpPrinter || process.platform !== "win32") return false;
+  // Instax prints only through the print agent next to the printer (Bluetooth).
+  if (!config.dnpPrinter || process.platform !== "win32" || job.printSize === "instax") return false;
   queue = queue
     .catch(() => {})
     .then(async () => {
