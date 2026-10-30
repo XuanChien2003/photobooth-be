@@ -465,6 +465,54 @@ test("a Windows print agent leases one branch job once and reports spool dispatc
   }
 });
 
+test("each print agent claims only the sizes its printers print (DNP: 10 × 15, Instax: instax)", async () => {
+  const previous = config.printAgentToken;
+  config.printAgentToken = randomUUID() + randomUUID();
+  const make = (printSize) => PrintJob.create({ branch: "Size branch", code: "929292", file: "x.jpg",
+    sheets: [{ file: "x.jpg" }], printSize, copies: 1, status: "pending", spoolStatus: "queued" });
+  const [instax, full] = [await make("instax"), await make("full")];
+  const claim = (printSizes) => request(app).post("/api/print-agent/claim")
+    .set({ Authorization: `Bearer ${config.printAgentToken}` })
+    .send({ branch: "Size branch", ...(printSizes && { printSizes }) }).expect(200);
+  try {
+    assert.equal((await claim(["full", "strip"])).body.job.id, String(full._id));
+    assert.equal((await claim(["full", "strip"])).body.job, null, "a DNP agent never takes an Instax job");
+    const leased = (await claim(["instax"])).body.job;
+    assert.deepEqual([leased.id, leased.printSize], [String(instax._id), "instax"]);
+    await request(app).post(`/api/print-agent/jobs/${instax._id}/complete`)
+      .set({ Authorization: `Bearer ${config.printAgentToken}` })
+      .send({ leaseId: leased.leaseId, sent: true, message: "Đã in 1 tấm ra máy Instax · còn 9 tấm phim." }).expect(200);
+    assert.equal((await PrintJob.findById(instax._id)).spoolMessage, "Đã in 1 tấm ra máy Instax · còn 9 tấm phim.");
+    await request(app).post("/api/print-agent/claim").set({ Authorization: `Bearer ${config.printAgentToken}` })
+      .send({ branch: "Size branch", printSizes: ["a4"] }).expect(400);
+    // Agent vừa nhận lệnh: quản trị thấy chương trình in tự động đang chạy và in được khổ nào.
+    const statuses = (await admin.get("/api/admin/print-jobs/printers").expect(200)).body;
+    const agent = statuses.find((row) => row.branch === "Size branch").agent;
+    assert.equal(agent.running, true);
+    assert.deepEqual(agent.printSizes, ["instax"]);
+    // In lỗi: lễ tân đang mở trang quản trị nhận cảnh báo ngay (luồng sự kiện print-failed).
+    const failing = await make("instax");
+    const lease = (await claim(["instax"])).body.job;
+    const events = [];
+    const listen = (job) => events.push(job);
+    printEvents.on("print-failed", listen);
+    try {
+      await request(app).post(`/api/print-agent/jobs/${failing._id}/complete`)
+        .set({ Authorization: `Bearer ${config.printAgentToken}` })
+        .send({ leaseId: lease.leaseId, sent: false, message: "Máy Instax hết phim — thay phim rồi bấm In lại." })
+        .expect(200);
+    } finally {
+      printEvents.off("print-failed", listen);
+    }
+    assert.deepEqual(events.map((job) => [job.code, job.printSize, job.spoolMessage, job.branch]),
+      [["929292", "instax", "Máy Instax hết phim — thay phim rồi bấm In lại.", "Size branch"]]);
+  } finally {
+    config.printAgentToken = previous;
+    await PrintJob.deleteMany({ branch: "Size branch" });
+    await Setting.collection.deleteOne({ key: "printers:Size branch" });
+  }
+});
+
 test("order filters include the latest print preview and staff can reprint it", async () => {
   const booking = await Booking.create({
     name: "Khách đơn hàng",

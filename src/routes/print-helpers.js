@@ -39,6 +39,7 @@ export const publicJob = (job, accessToken) => ({
   roomName: job.roomName,
   copies: job.copies,
   frameName: job.frameName,
+  printSize: job.printSize || "full",
   sheetCount: job.sheets?.length || 1,
   // Định dạng tờ in (png / jpg): nút "Tải ảnh final" ghi đúng loại tệp.
   format: printExtension(job.sheets?.[0]?.file || job.file || ""),

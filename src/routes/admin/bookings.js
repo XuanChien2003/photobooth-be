@@ -9,6 +9,7 @@ import { printEvents } from "../../services/print-events.js";
 import { fail, id, date } from "../validation.js";
 import { KIOSK_LIVE_MS } from "../kiosk-session.js";
 import { publicJob } from "../print-helpers.js";
+import { extraPriceFor } from "../print-count.js";
 
 export const bookingsRouter = Router();
 
@@ -158,11 +159,11 @@ bookingsRouter.post("/bookings/:id/prints", allow("print:operate"), async (req, 
     })
     .parse(req.body);
   const bookingId = id.parse(req.params.id);
-  const target = await Booking.findById(bookingId).select("branch").lean();
+  const target = await Booking.findById(bookingId).select("branch printSize").lean();
   if (!target) fail(404, "Không tìm thấy vé.");
   requireBranch(req, target.branch);
   const settings = (await Setting.findOne({ key: "studio" }).lean())?.value;
-  const amount = d.sheets * (Number(settings?.extraPrintPrice) || 0);
+  const amount = d.sheets * (Number(extraPriceFor(target.printSize, settings)) || 0);
   if (d.expectedTotal !== amount)
     fail(409, "Giá in thêm vừa thay đổi. Vui lòng kiểm tra lại số tiền.");
   const updated = await Booking.findOneAndUpdate(

@@ -6,6 +6,7 @@ import { deleteMedia, MEDIA_TTL_MS } from "../../services/media.js";
 import { printEvents } from "../../services/print-events.js";
 import { fail, id } from "../validation.js";
 import { publicJob, releaseSheets } from "../print-helpers.js";
+import { listPrinterStatus } from "../../services/printer-status.js";
 
 export const printsRouter = Router();
 
@@ -20,16 +21,25 @@ printsRouter.get("/stream", (req, res) => {
   });
   res.flushHeaders();
   res.write("retry: 5000\n\n");
-  const send = (job) => {
+  // Lệnh in mới và lệnh in lỗi (print agent báo hết phim, mất kết nối…).
+  const relay = (event) => (job) => {
     if (!assigned || job.branch === assigned)
-      res.write(`event: print\ndata: ${JSON.stringify(job)}\n\n`);
+      res.write(`event: ${event}\ndata: ${JSON.stringify(job)}\n\n`);
   };
+  const send = relay("print");
+  const failed = relay("print-failed");
   printEvents.on("print", send);
+  printEvents.on("print-failed", failed);
   const ping = setInterval(() => res.write(": ping\n\n"), 25000);
   req.on("close", () => {
     clearInterval(ping);
     printEvents.off("print", send);
+    printEvents.off("print-failed", failed);
   });
+});
+// Tình trạng máy in Instax theo chi nhánh (lễ tân chỉ thấy chi nhánh được phân công).
+printsRouter.get("/printers", async (req, res) => {
+  res.json(await listPrinterStatus(staffBranch(req)));
 });
 printsRouter.get("/", async (req, res) => {
   const assigned = staffBranch(req);

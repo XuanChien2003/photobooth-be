@@ -244,9 +244,9 @@ albumsRouter.post("/:token/print-pack", printLimit, printBody, async (req, res) 
     for (const { buffer, type } of d.sheets) {
       let metadata;
       try {
-        metadata = await validatePrintImage(buffer, `image/${type}`);
+        metadata = await validatePrintImage(buffer, `image/${type}`, b.printSize);
       } catch (error) {
-        fail(400, error.message.startsWith("Tờ ảnh") ? error.message : "Ảnh in không hợp lệ.");
+        fail(400, /^(Tờ ảnh|Tấm Instax)/.test(error.message) ? error.message : "Ảnh in không hợp lệ.");
       }
       const { width, height, extension } = metadata;
       const file = mediaReference(token() + "." + extension);
