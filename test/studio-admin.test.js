@@ -228,23 +228,25 @@ test("custom filters are validated and published in the catalog settings", async
   assert.deepEqual(settings.customFilters, [{ ...filter, active: true }]);
 });
 
-test("setting up a kiosk picks the room type first; test mode only exists in cash rooms", async () => {
+test("setting up a kiosk picks the room kind first (photobooth / polaroid); test mode only in photobooth", async () => {
   const setup = (body) => staff.post(`/api/admin/rooms/${room._id}/device`).send(body);
-  const cash = (await setup({ payment: "cash", paymentTest: true }).expect(200)).body;
-  assert.equal(cash.payment, "cash");
-  assert.equal(cash.paymentTest, true);
-  const ping = (await request(app).post("/api/kiosk/ping").send({ device: cash.token }).expect(200)).body;
-  assert.equal(ping.room.payment, "cash");
+  const booth = (await setup({ kind: "photobooth", paymentTest: true }).expect(200)).body;
+  assert.deepEqual([booth.kind, booth.paymentTest], ["photobooth", true]);
+  const ping = (await request(app).post("/api/kiosk/ping").send({ device: booth.token }).expect(200)).body;
+  assert.equal(ping.room.kind, "photobooth");
   assert.equal(ping.room.paymentTest, true);
   assert.equal(ping.room.cashCheckoutReady, true);
-  // Phòng nhập mã: chế độ thử tự tắt. Không gửi loại phòng: giữ nguyên.
-  const counter = (await setup({ payment: "counter", paymentTest: true }).expect(200)).body;
-  assert.deepEqual([counter.payment, counter.paymentTest], ["counter", false]);
+  // Phòng Polaroid: không thu tiền tại máy, chế độ thử tự tắt. Không gửi loại phòng: giữ nguyên.
+  const polaroid = (await setup({ kind: "polaroid", paymentTest: true }).expect(200)).body;
+  assert.deepEqual([polaroid.kind, polaroid.paymentTest], ["polaroid", false]);
+  const pinged = (await request(app).post("/api/kiosk/ping").send({ device: polaroid.token }).expect(200)).body;
+  assert.deepEqual([pinged.room.kind, pinged.room.cashCheckoutReady], ["polaroid", false]);
   const kept = (await setup({}).expect(200)).body;
-  assert.deepEqual([kept.payment, kept.paymentTest], ["counter", false]);
-  await setup({ payment: "coins" }).expect(400);
+  assert.deepEqual([kept.kind, kept.paymentTest], ["polaroid", false]);
+  await setup({ kind: "selfie" }).expect(400);
+  await setup({ kind: "photobooth" }).expect(200);
   const saved = await Room.findById(room._id).lean();
-  assert.deepEqual([saved.payment, saved.paymentTest], ["counter", false]);
+  assert.deepEqual([saved.kind, saved.paymentTest], ["photobooth", false]);
 });
 
 test("kiosks report online with the remote flip mode; packages can be limited to branches", async () => {
@@ -255,8 +257,8 @@ test("kiosks report online with the remote flip mode; packages can be limited to
   await request(app).post("/api/kiosk/ping").send({ device: "bad" }).expect(403);
   const ping = (await request(app).post("/api/kiosk/ping").send({ device: token }).expect(200)).body;
   assert.deepEqual(ping.room, {
-    _id: String(room._id), name: "Máy 1", branch: "Bắc Giang", flip: "off", payment: "counter", paymentTest: false,
-    cashCheckoutReady: false,
+    _id: String(room._id), name: "Máy 1", branch: "Bắc Giang", flip: "off", kind: "photobooth", paymentTest: false,
+    cashCheckoutReady: true,
     printers: { instax: { ready: false, film: null, message: "Máy in Instax chưa kết nối với máy tính." } },
   });
   const listed = (await admin.get("/api/admin/rooms").expect(200)).body.find((r) => r._id === String(room._id));
@@ -315,26 +317,24 @@ test("packages snapshot how many photos the guest picks; the kiosk uploads one t
 });
 
 test("guests can buy a session at the kiosk with cash; test mode skips payment without revenue", async () => {
+  // Phòng Polaroid: không bán lượt bằng tiền mặt tại máy (khách trả ở quầy).
   await admin.put(`/api/admin/rooms/${room._id}`).send({
-    name: "Máy 1", description: "", branch: "Bắc Giang", payment: "counter", paymentTest: false, active: true,
+    name: "Máy 1", description: "", branch: "Bắc Giang", kind: "polaroid", paymentTest: false, active: true,
   }).expect(200);
   const { token } = (await staff.post(`/api/admin/rooms/${room._id}/device`).expect(200)).body;
   const sale = (extra) => ({ device: token, package: String(pack._id), requestKey: randomUUID(), ...extra });
-  await request(app).post("/api/kiosk/sale").send(sale({ bills: [{ amount: 100000 }] })).expect(403);
-  await request(app).post("/api/kiosk/sale").send(sale({ skip: true })).expect(403);
-  // Phòng nhập mã: chế độ thử không biến nó thành phòng đút tiền.
+  const refused = await request(app).post("/api/kiosk/sale").send(sale({ bills: [{ amount: 100000 }] })).expect(403);
+  assert.match(refused.body.message, /Polaroid/);
+  // Phòng photobooth chưa bật chế độ thử: không bỏ qua bước đút tiền.
   await admin.put(`/api/admin/rooms/${room._id}`).send({
-    name: "Máy 1", description: "", branch: "Bắc Giang", payment: "counter", paymentTest: true, active: true,
+    name: "Máy 1", description: "", branch: "Bắc Giang", kind: "photobooth", paymentTest: false, active: true,
   }).expect(200);
-  const codeRoom = (await request(app).post("/api/kiosk/ping").send({ device: token }).expect(200)).body.room;
-  assert.equal(codeRoom.cashCheckoutReady, false);
-  const refused = await request(app).post("/api/kiosk/sale").send(sale({ skip: true })).expect(403);
-  assert.match(refused.body.message, /phòng nhập mã/);
+  await request(app).post("/api/kiosk/sale").send(sale({ skip: true })).expect(403);
   await admin.put(`/api/admin/rooms/${room._id}`).send({
-    name: "Máy 1", description: "", branch: "Bắc Giang", payment: "cash", paymentTest: true, active: true,
+    name: "Máy 1", description: "", branch: "Bắc Giang", kind: "photobooth", paymentTest: true, active: true,
   }).expect(200);
   const ping = (await request(app).post("/api/kiosk/ping").send({ device: token }).expect(200)).body.room;
-  assert.equal(ping.payment, "cash");
+  assert.equal(ping.kind, "photobooth");
   assert.equal(ping.paymentTest, true);
   assert.equal(ping.cashCheckoutReady, true);
   const short = await request(app).post("/api/kiosk/sale").send(sale({ bills: [{ amount: 50000 }] })).expect(400);
@@ -398,7 +398,7 @@ test("Instax: two prints minimum, its own extra price, and the kiosk sells it on
   assert.match(one.body.message, /khổ Instax kèm ít nhất 2 tấm/);
   await admin.put(`/api/admin/packages/${pack._id}`).send({ ...base, prints: 2 }).expect(200);
   await admin.put(`/api/admin/rooms/${room._id}`).send({
-    name: "Máy 1", description: "", branch: "Bắc Giang", payment: "cash", paymentTest: false, active: true,
+    name: "Máy 1", description: "", branch: "Bắc Giang", kind: "polaroid", paymentTest: false, active: true,
   }).expect(200);
   const { token } = (await staff.post(`/api/admin/rooms/${room._id}/device`).expect(200)).body;
   const instax = async () => (await request(app).post("/api/kiosk/ping").send({ device: token }).expect(200)).body.room.printers.instax;
@@ -435,13 +435,27 @@ test("Instax: two prints minimum, its own extra price, and the kiosk sells it on
   await admin.put("/api/admin/settings/extra-print-price").send({ extraInstaxPrice: 30000 }).expect(200);
   const prices = (await request(app).get("/api/catalog").expect(200)).body.settings;
   assert.deepEqual([prices.extraPrintPrice, prices.extraInstaxPrice], [15000, 30000]);
-  const sale = { device: token, package: String(pack._id), requestKey: randomUUID(), prints: 3 };
-  const short = await request(app).post("/api/kiosk/sale").send({ ...sale, bills: [{ amount: 140000 }] }).expect(400);
-  assert.match(short.body.message, /cần 150\.000 đ/);
-  const sold = (await request(app).post("/api/kiosk/sale")
-    .send({ ...sale, requestKey: randomUUID(), bills: [{ amount: 100000 }, { amount: 50000 }] }).expect(201)).body;
-  const stored = await Booking.findById(sold.booking._id).lean();
-  assert.deepEqual([stored.printSize, stored.prints, stored.total], ["instax", 3, 150000]);
+  // Phòng Polaroid: khách chọn layout (gói khổ Instax) rồi vào chụp luôn, trả tiền ở quầy.
+  const layout = { device: token, package: String(pack._id), requestKey: randomUUID() };
+  const started = (await request(app).post("/api/kiosk/polaroid").send(layout).expect(201)).body;
+  assert.ok(started.captureToken && started.accessToken);
+  // Gửi lại sau khi mất phản hồi: đúng lượt chụp cũ, không tạo đơn mới.
+  const replay = (await request(app).post("/api/kiosk/polaroid").send(layout).expect(200)).body;
+  assert.equal(replay.booking._id, started.booking._id);
+  let stored = await Booking.findById(started.booking._id).lean();
+  assert.deepEqual([stored.printSize, stored.prints, stored.total, stored.paid, stored.source, stored.status],
+    ["instax", 2, 120000, false, "polaroid", "checked_in"]);
+  // Không bán gói Instax bằng tiền mặt ở máy; nhân viên ghi nhận đã thu ở quầy.
+  await request(app).post("/api/kiosk/sale").send({ ...layout, requestKey: randomUUID(), bills: [{ amount: 200000 }] }).expect(403);
+  const collected = (await staff.patch(`/api/admin/bookings/${stored._id}`).send({ collected: "transfer" }).expect(200)).body;
+  assert.equal(collected.paid, true);
+  stored = await Booking.findById(stored._id).lean();
+  assert.deepEqual([stored.paid, stored.paymentMethod], [true, "transfer"]);
+  assert.ok(stored.paidAt);
+  await staff.patch(`/api/admin/bookings/${stored._id}`).send({ collected: "cash" }).expect(409);
+  // Phòng photobooth không mở lượt Polaroid.
+  await staff.post(`/api/admin/rooms/${room._id}/device`).send({ kind: "photobooth" }).expect(200);
+  await request(app).post("/api/kiosk/polaroid").send({ ...layout, requestKey: randomUUID() }).expect(403);
 
   await Setting.updateOne({ key: "studio" }, { $unset: { "value.extraPrintPrice": 1, "value.extraInstaxPrice": 1 } });
   await admin.put(`/api/admin/packages/${pack._id}`)
@@ -573,4 +587,32 @@ test("the kiosk saves the framed photo into the album even without prints; it ex
   assert.equal(await readMedia(saved.composite.thumbnailFile), null);
   await request(app).get(`/api/albums/${accessToken}/composite`).expect(404);
   await Booking.deleteMany({});
+});
+
+test("the shop edits the kiosk's on-screen texts; blank lines fall back to the kiosk defaults", async () => {
+  const texts = { "layout.title": "Chọn layout nè", "layout.confirm": "Chốt layout này, vào chụp nha!", "pay.title": "" };
+  await staff.put("/api/admin/settings/kiosk-texts").send({ kioskTexts: texts }).expect(403);
+  await admin.put("/api/admin/settings/kiosk-texts").send({ kioskTexts: { "Bad Key!": "x" } }).expect(400);
+  await admin.put("/api/admin/settings/kiosk-texts").send({ kioskTexts: { "layout.title": "x".repeat(201) } }).expect(400);
+  const saved = (await admin.put("/api/admin/settings/kiosk-texts").send({ kioskTexts: texts }).expect(200)).body;
+  assert.deepEqual(saved.kioskTexts, { "layout.title": "Chọn layout nè", "layout.confirm": "Chốt layout này, vào chụp nha!" });
+  const catalog = (await request(app).get("/api/catalog").expect(200)).body.settings;
+  assert.equal(catalog.kioskTexts["layout.title"], "Chọn layout nè");
+  await admin.put("/api/admin/settings/kiosk-texts").send({ kioskTexts: {} }).expect(200);
+});
+
+test("a counter code never sells a Polaroid layout (Instax): photobooth codes print on the DNP only", async () => {
+  const layout = await Package.create({
+    name: "Polaroid 4 ảnh", price: 110000, duration: 10, prints: 2, shots: 10, selectCount: 4, printSize: "instax", active: true,
+  });
+  try {
+    const refused = await staff.post("/api/admin/tickets").send({
+      name: "Khách", phone: "", room: "", branch: "Bắc Giang", package: String(layout._id), requestKey: randomUUID(),
+      paymentMethod: "cash", paymentReceived: true,
+    });
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.match(refused.body.message, /Layout Polaroid không bán bằng mã chụp/);
+  } finally {
+    await Package.deleteOne({ _id: layout._id });
+  }
 });

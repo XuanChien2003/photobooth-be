@@ -97,6 +97,22 @@ settingsRouter.put("/custom-filters", admin, async (req, res) => {
   res.json(saved.value);
 });
 
+// Chữ trên màn hình máy chụp (Thiết lập → Chữ trên máy chụp): mỗi khóa là một dòng chữ; để trống
+// là dùng chữ mặc định của máy chụp.
+settingsRouter.put("/kiosk-texts", admin, async (req, res) => {
+  const kioskTexts = z
+    .record(z.string().regex(/^[a-z][a-zA-Z0-9.]{1,40}$/), z.string().trim().max(200))
+    .refine((value) => Object.keys(value).length <= 80, "Quá nhiều dòng chữ.")
+    .transform((value) => Object.fromEntries(Object.entries(value).filter(([, text]) => text)))
+    .parse(req.body.kioskTexts);
+  const saved = await Setting.findOneAndUpdate(
+    { key: "studio" },
+    { $set: { "value.kioskTexts": kioskTexts } },
+    { upsert: true, new: true },
+  );
+  res.json(saved.value);
+});
+
 settingsRouter.put("/", admin, async (req, res) => {
   const value = z
     .object({

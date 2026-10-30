@@ -105,6 +105,8 @@ bookingsRouter.patch("/bookings/:id", async (req, res) => {
         .optional(),
       printed: z.boolean().optional(),
       paymentReceived: z.boolean().optional(),
+      // Lượt chụp phòng Polaroid trả tiền ở quầy: nhân viên ghi nhận đã thu (tiền mặt / chuyển khoản).
+      collected: z.enum(["cash", "transfer"]).optional(),
     })
     .parse(req.body);
   const b = await Booking.findById(id.parse(req.params.id));
@@ -127,7 +129,14 @@ bookingsRouter.patch("/bookings/:id", async (req, res) => {
     fail(409, "Vui lòng kích hoạt mã tại quầy sau khi nhận tiền.");
   if (d.printed !== undefined && b.status !== "completed")
     fail(400, "Phiên chụp chưa hoàn tất.");
-  const { paymentReceived, ...changes } = d;
+  if (d.collected && (b.paid || b.source !== "polaroid" || !["checked_in", "completed"].includes(b.status)))
+    fail(409, b.paid ? "Đơn này đã thu tiền." : "Chỉ ghi nhận thu tiền ở quầy cho lượt chụp phòng Polaroid.");
+  const { paymentReceived, collected, ...changes } = d;
+  if (collected) {
+    changes.paid = true;
+    changes.paidAt = new Date();
+    changes.paymentMethod = collected;
+  }
   if (d.status === "confirmed") {
     changes.paid = true;
     changes.paidAt = new Date();

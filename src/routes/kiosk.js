@@ -70,15 +70,15 @@ kioskRouter.post("/ping", async (req, res) => {
   const room = await Room.collection.findOneAndUpdate(
     { _id: new mongoose.Types.ObjectId(String(device.room)), active: true },
     { $set: { lastSeenAt: new Date() } },
-    { returnDocument: "after", projection: { name: 1, branch: 1, flip: 1, payment: 1, paymentTest: 1 } },
+    { returnDocument: "after", projection: { name: 1, branch: 1, flip: 1, kind: 1, paymentTest: 1 } },
   );
   if (!room) fail(403, "Phòng chụp đã ngừng hoạt động.");
   const printers = await readPrinterStatus(room.branch);
   res.json({ room: {
     _id: room._id, name: room.name, branch: room.branch, flip: room.flip || "device",
-    payment: room.payment || "counter", paymentTest: Boolean(room.paymentTest),
-    // Phòng đút tiền: máy chụp bán lượt tại máy (chọn gói, số tờ in rồi đút tiền).
-    cashCheckoutReady: room.payment === "cash",
+    kind: room.kind || "photobooth", paymentTest: Boolean(room.paymentTest),
+    // Phòng photobooth: máy chụp bán lượt tại máy bằng tiền mặt (bên cạnh nhập mã).
+    cashCheckoutReady: (room.kind || "photobooth") === "photobooth",
     // Máy in Instax cạnh máy chụp: khổ Instax chỉ mở khi máy in sẵn sàng và đủ phim.
     printers: { instax: instaxState(printers) },
   } });
@@ -123,14 +123,16 @@ kioskRouter.post("/sale", sensitive(), async (req, res) => {
     if (!existing.captureSession) fail(409, "Lượt chụp này đã kết thúc.");
     return res.json(saleSession(existing, room, existing.captureSession));
   }
-  if (room.payment !== "cash")
-    fail(403, "Đây là phòng nhập mã — khách chuyển khoản ở quầy rồi nhập mã. Đổi loại phòng ở Quản trị → Quản lý máy.");
+  if (room.kind === "polaroid")
+    fail(403, "Phòng Polaroid không thu tiền tại máy — khách chọn layout rồi trả tiền ở quầy.");
   if (d.skip && !room.paymentTest)
     fail(403, "Phòng chưa bật chế độ thử (bỏ qua đút tiền). Bật ở Quản trị → Quản lý máy.");
   const pack = await Package.findOne({ _id: d.package, active: true });
   if (!pack) fail(400, "Gói chụp không còn hoạt động.");
   if (pack.branches?.length && !pack.branches.includes(room.branch))
     fail(400, `Gói “${pack.name}” không áp dụng tại chi nhánh ${room.branch}.`);
+  if (pack.printSize === "instax")
+    fail(400, "Gói Instax là layout của phòng Polaroid, không bán ở phòng photobooth.");
   const least = minSheets(pack);
   const sheets = d.prints ?? least;
   if (sheets < least)
@@ -180,6 +182,70 @@ kioskRouter.post("/sale", sensitive(), async (req, res) => {
         paymentMethod: d.skip ? "test" : "cash",
         cashReceived: received,
         cashBills: d.bills.map((bill) => ({ amount: bill.amount, at: bill.at ? new Date(bill.at) : now })),
+        status: "checked_in",
+        captureSession: sessionId,
+        captureSeenAt: now,
+        requestKey: d.requestKey,
+      });
+      return res.status(201).json(saleSession(b, room, sessionId));
+    } catch (error) {
+      if (error.code === 11000 && error.keyPattern?.code) continue;
+      if (error.code === 11000 && error.keyPattern?.requestKey) {
+        const replay = await Booking.findOne({ requestKey: d.requestKey }).select("+accessToken +captureSession");
+        if (replay) return res.json(saleSession(replay, room, replay.captureSession));
+      }
+      throw error;
+    }
+  }
+  fail(503, "Không tạo được lượt chụp. Vui lòng thử lại.");
+});
+// Phòng Polaroid: khách chọn layout (gói khổ Instax) rồi vào chụp luôn, trả tiền ở quầy. Lượt chụp
+// ghi là chưa thu tiền; nhân viên bấm "Đã thu tiền" ở Đơn hàng khi khách trả.
+kioskRouter.post("/polaroid", sensitive(), async (req, res) => {
+  const d = z.object({
+    device: z.string().max(2000),
+    package: z.string().regex(/^[a-f\d]{24}$/i),
+    requestKey: z.uuid(),
+  }).parse(req.body);
+  const room = await deviceRoom(d.device);
+  const existing = await Booking.findOne({ requestKey: d.requestKey }).select("+accessToken +captureSession");
+  if (existing) {
+    if (String(existing.room) !== String(room._id)) fail(409, "Mã giao dịch đã dùng ở máy khác.");
+    if (!existing.captureSession) fail(409, "Lượt chụp này đã kết thúc.");
+    return res.json(saleSession(existing, room, existing.captureSession));
+  }
+  if (room.kind !== "polaroid")
+    fail(403, "Đây là phòng photobooth — khách chọn Nhập mã hoặc Tiền mặt. Đổi loại phòng ở Quản trị → Quản lý máy.");
+  const pack = await Package.findOne({ _id: d.package, active: true });
+  if (!pack || pack.printSize !== "instax") fail(400, "Layout không còn hoạt động.");
+  if (pack.branches?.length && !pack.branches.includes(room.branch))
+    fail(400, `Layout “${pack.name}” không áp dụng tại chi nhánh ${room.branch}.`);
+  const sessionId = token();
+  const now = new Date();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const b = await Booking.create({
+        code: String(crypto.randomInt(100000, 1000000)),
+        accessToken: token(),
+        name: "Khách Polaroid",
+        branch: room.branch,
+        room: room._id,
+        roomName: room.name,
+        package: pack._id,
+        packageName: pack.name,
+        shots: pack.shots,
+        countdownSeconds: pack.countdownSeconds || 10,
+        selectCount: pack.selectCount || 4,
+        printSize: "instax",
+        captureDuration: pack.duration,
+        prints: minSheets(pack),
+        total: Number(pack.price) || 0,
+        discount: 0,
+        source: "polaroid",
+        date: today(),
+        time: "",
+        // Trả tiền ở quầy: chưa tính là đã thu cho tới khi nhân viên xác nhận.
+        paid: false,
         status: "checked_in",
         captureSession: sessionId,
         captureSeenAt: now,
