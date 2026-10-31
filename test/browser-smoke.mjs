@@ -509,26 +509,74 @@ try {
   });
   await phone.getByText(`#${booking.code}`, { exact: true }).waitFor();
   const albumPath = `/api/albums/${booking.accessToken}`;
-  const compositeHref = await viewer
-    .getByRole("link", { name: "Tải ảnh ghép" })
-    .getAttribute("href");
-  assert.match(compositeHref, new RegExp(`${albumPath}/composite\\?download=1$`));
-  const zipHref = await viewer
-    .getByRole("link", { name: "Tải tất cả ảnh (ZIP)" })
-    .getAttribute("href");
-  assert.match(zipHref, new RegExp(`${albumPath}/download$`));
+  const compositeHref = `${albumPath}/composite?download=1`;
+  const zipHref = `${albumPath}/download`;
+  const videoExt = withVideo.video.mimeType === "video/mp4" ? "mp4" : "webm";
+  // Không còn dòng nhắc "giữ vào ảnh / bấm tải video" và nút ZIP: chỉ "Lưu" và "Lưu tất cả".
+  assert.equal(await viewer.getByText(/GIỮ VÀO ẢNH|TẢI VIDEO/).count(), 0);
+  assert.equal(await viewer.getByText(/ZIP/).count(), 0);
+  // Android / máy tính: "Lưu" tải tệp đang xem, "Lưu tất cả" tải từng tệp (ảnh ghép, video, ảnh gốc).
+  const savedOne = phone.waitForEvent("download");
+  await viewer.getByRole("button", { name: "Lưu ảnh ghép" }).click();
+  assert.equal((await savedOne).suggestedFilename(), `NXC-${booking.code}-anh-ghep.jpg`);
+  const savedAll = [];
+  const collect = (download) => savedAll.push(download.suggestedFilename());
+  phone.on("download", collect);
+  await viewer.getByRole("button", { name: "Lưu tất cả (4)" }).click();
+  await until(() => savedAll.length === 4 || null, "tải đủ 4 tệp của album");
+  phone.off("download", collect);
+  assert.deepEqual(savedAll, [
+    `NXC-${booking.code}-anh-ghep.jpg`,
+    `NXC-${booking.code}-video.${videoExt}`,
+    `NXC-${booking.code}-01.jpg`,
+    `NXC-${booking.code}-02.jpg`,
+  ]);
   await viewer.getByRole("tab", { name: "Video tua nhanh" }).click();
-  const videoHref = await viewer
-    .getByRole("link", { name: "Tải video" })
-    .getAttribute("href");
-  assert.ok(videoHref.endsWith(`${albumPath}/video?download=1`), videoHref);
-  const video = await phone.request.get(absolute(videoHref));
+  await viewer.getByRole("button", { name: "Lưu video" }).waitFor();
+  const video = await phone.request.get(absolute(`${albumPath}/video?download=1`));
   assert.equal(video.status(), 200);
   assert.equal(video.headers()["content-type"], withVideo.video.mimeType);
   assert.equal((await video.body()).length, withVideo.video.size);
   await viewer.getByRole("tab", { name: "Ảnh 2" }).click();
-  await viewer.getByRole("link", { name: "Tải ảnh gốc" }).waitFor();
+  await viewer.getByRole("button", { name: "Lưu ảnh", exact: true }).waitFor();
   assert.equal(await viewer.getByRole("img", { name: "Ảnh 2" }).count(), 1);
+
+  // iPhone: "Lưu tất cả" mở bảng chia sẻ của iOS với mọi tệp ("Lưu N mục" → app Ảnh). App Ảnh không
+  // nhận WebM nên video WebM không nằm trong bảng. Tải lâu, Safari chặn bảng chia sẻ: nút đổi thành
+  // "Bấm để lưu", bấm lại là mở với các tệp đã tải.
+  const iphoneContext = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+  });
+  await iphoneContext.addInitScript(() => {
+    window.__shared = [];
+    let blocked = true;
+    navigator.canShare = (data) => Array.isArray(data?.files);
+    navigator.share = async ({ files }) => {
+      if (blocked) {
+        blocked = false;
+        throw new DOMException("activation expired", "NotAllowedError");
+      }
+      window.__shared.push(files.map((file) => ({ name: file.name, type: file.type, size: file.size })));
+    };
+  });
+  const iphone = await iphoneContext.newPage();
+  watch(iphone);
+  await iphone.goto(`${config.origin}/album/${booking.accessToken}`);
+  const iphoneViewer = iphone.getByRole("region", { name: "Ảnh và video của bạn" });
+  const iosCount = videoExt === "mp4" ? 4 : 3;
+  await iphoneViewer.getByRole("button", { name: `Lưu tất cả (${iosCount})` }).click();
+  await iphoneViewer.getByRole("button", { name: `Bấm để lưu ${iosCount} mục` }).click();
+  const shared = await iphone.waitForFunction(() => window.__shared[0]).then((handle) => handle.jsonValue());
+  assert.deepEqual(shared.map((file) => [file.name, file.type]), [
+    [`NXC-${booking.code}-anh-ghep.jpg`, "image/jpeg"],
+    ...(videoExt === "mp4" ? [[`NXC-${booking.code}-video.mp4`, "video/mp4"]] : []),
+    [`NXC-${booking.code}-01.jpg`, "image/jpeg"],
+    [`NXC-${booking.code}-02.jpg`, "image/jpeg"],
+  ]);
+  assert.ok(shared.every((file) => file.size > 1000), "các tệp chia sẻ là ảnh / video thật");
+  await iphoneContext.close();
   // Album chỉ có các link tải về: không có đường dẫn sang trang nào khác.
   assert.deepEqual(
     (await phone.locator("a").evaluateAll((links) => links.map((a) => a.getAttribute("href"))))
