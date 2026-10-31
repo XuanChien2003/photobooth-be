@@ -1563,15 +1563,22 @@ export const openapi = {
         summary:
           "Lấy mã máy chụp (device) của phòng — dùng cho liên kết Cài kiosk",
         description:
-          "Lễ tân (staff) và quản trị đã đăng nhập có thể mở/cài kiosk cho phòng đang hoạt động. Mã có hạn 1 năm; phòng đã tắt không thể cấp mã mới hoặc dùng mã cũ để nhận vé.",
+          "Lễ tân (staff, quyền Cài máy chụp) và quản trị đã đăng nhập có thể mở/cài kiosk cho phòng đang hoạt động. Mã có hạn 1 năm; phòng đã tắt không thể cấp mã mới hoặc dùng mã cũ để nhận vé. " +
+          "Loại phòng (photobooth / polaroid) chọn lúc thêm phòng, không đổi ở đây; `paymentTest` bật / tắt chế độ thử đút tiền của phòng photobooth (không gửi = giữ nguyên).",
         security: loggedIn,
         parameters: [pathParam("id", "Mã phòng")],
+        requestBody: body({ paymentTest: { type: "boolean" } }, []),
         responses: {
           ...ok(
             "Mã máy chụp",
-            object({ token: { type: "string" }, name: { type: "string" } }),
+            object({
+              token: { type: "string" },
+              name: { type: "string" },
+              kind: enumOf(["photobooth", "polaroid"]),
+              paymentTest: { type: "boolean" },
+            }),
           ),
-          ...errors(400, 401, 404, 409),
+          ...errors(400, 401, 403, 404, 409),
         },
       },
     },

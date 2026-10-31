@@ -1,4 +1,4 @@
-import { Router } from "express";
+import express, { Router } from "express";
 import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
@@ -21,35 +21,35 @@ export const adminRouter = Router();
 // Các route cấp mã tự kiểm tra đăng nhập trước khi áp dụng giới hạn cấp mã.
 adminRouter.use("/tickets", ticketsRouter);
 adminRouter.use(auth);
+// Body quản trị (tới 16 MB: ảnh khung, màn hình chờ, QR chuyển khoản dạng base64) — chỉ đọc sau khi
+// đã đăng nhập (xem middleware/security.js).
+adminRouter.use(express.json({ limit: "16mb", inflate: false }));
 adminRouter.use("/print-jobs", printsRouter);
 adminRouter.use(bookingsRouter);
 adminRouter.use("/stats", statsRouter);
 adminRouter.use("/storage", storageRouter);
 adminRouter.use("/shifts", shiftsRouter);
 
-// Cài máy chụp: chọn loại phòng (Photobooth / Polaroid, kèm chế độ thử đút tiền của photobooth) rồi
-// mới cấp liên kết + QR. Không gửi loại phòng thì giữ nguyên như đang lưu.
-const deviceSetup = z.object({
-  kind: z.enum(["photobooth", "polaroid"]).optional(),
-  paymentTest: z.boolean().optional(),
-});
+// Cài máy chụp: cấp liên kết + QR mở máy chụp của phòng. Loại phòng (Photobooth / Polaroid) chọn lúc
+// quản trị thêm phòng và không đổi ở đây; phòng Photobooth bật / tắt chế độ thử đút tiền (paymentTest).
+// Không gửi paymentTest thì giữ nguyên như đang lưu.
+const deviceSetup = z.object({ paymentTest: z.boolean().optional() });
 adminRouter.post("/rooms/:id/device", allow("rooms:setup"), async (req, res) => {
   const room = await Room.findById(id.parse(req.params.id));
   if (!room) fail(404, "Không tìm thấy phòng.");
   if (!room.active) fail(409, "Phòng chụp đã ngừng hoạt động.");
   requireBranch(req, room.branch);
   const d = deviceSetup.parse(req.body || {});
-  if (d.kind) {
+  if (d.paymentTest !== undefined) {
     // Chế độ thử (nút giả lập đút tiền) chỉ có ở phòng photobooth (phòng Polaroid không thu tiền).
-    const paymentTest = d.kind === "photobooth" && Boolean(d.paymentTest);
-    if ((room.kind || "photobooth") !== d.kind || room.paymentTest !== paymentTest)
-      await Room.updateOne({ _id: room._id }, { kind: d.kind, paymentTest });
-    room.kind = d.kind;
+    const paymentTest = (room.kind || "photobooth") === "photobooth" && d.paymentTest;
+    if (Boolean(room.paymentTest) !== paymentTest) await Room.updateOne({ _id: room._id }, { paymentTest });
     room.paymentTest = paymentTest;
   }
+  const kind = room.kind || "photobooth";
   res.json({
-    kind: room.kind || "photobooth",
-    paymentTest: Boolean(room.paymentTest),
+    kind,
+    paymentTest: kind === "photobooth" && Boolean(room.paymentTest),
     token: jwt.sign({ type: "kiosk", room: String(room._id), jti: crypto.randomUUID() }, config.secret, {
       // Máy chụp nhớ liên kết sau lần mở đầu; 1 năm để tiệm không phải cài lại hằng tháng.
       expiresIn: "365d",

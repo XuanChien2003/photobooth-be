@@ -22,6 +22,8 @@ export function errorHandler(err, req, res, next) {
       .json({ message: "Ảnh quá lớn. Vui lòng thử lại với ảnh nhỏ hơn." });
   if (err.type === "entity.parse.failed")
     return res.status(400).json({ message: "Dữ liệu JSON không hợp lệ." });
+  if (err.type === "encoding.unsupported")
+    return res.status(415).json({ message: "Không nhận dữ liệu nén. Vui lòng gửi lại." });
   if (err instanceof mongoose.Error.CastError)
     return res.status(400).json({ message: "Mã dữ liệu không hợp lệ." });
   // Lỗi bất ngờ: ghi đường dẫn và stack vào log máy chủ (khách chỉ thấy câu chung bên dưới). Mã dài

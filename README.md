@@ -7,7 +7,8 @@ API cho hệ thống **nội bộ** của tiệm photobooth: lễ tân cấp mã
 (kiosk), khách quét QR trên máy chụp để nhận ảnh trên điện thoại, lễ tân in ảnh 10 × 15 cm.
 Không có trang công khai (không đặt lịch, không tra cứu mã vé trên web).
 
-Album của khách chỉ để xem và tải: ảnh ghép khung, video tua nhanh, ảnh gốc và ZIP. Chọn ảnh, ghép
+Album của khách chỉ để xem và lưu vào máy: ảnh ghép khung, video tua nhanh, ảnh gốc (ZIP ảnh gốc
+`/api/albums/:token/download` giờ chỉ còn ở menu "Tải ảnh" của Đơn hàng). Chọn ảnh, ghép
 khung và in đều làm ở máy chụp; máy chụp gửi bổ sung ảnh còn kẹt do mất mạng vào album qua
 `POST /api/albums/:token/photos`.
 
@@ -115,7 +116,7 @@ cho phép PUT — xem R2_SETUP.md mục 7. Đo thật ngày 17/10/2026 (ảnh 26
 Render mất ~27–29 giây tới khi "đã lưu" (riêng đẩy 15 MB qua proxy web tới Render ~23 giây), thẳng R2 ~5 giây
 (xin URL 0,4 s + tải lên R2 2,3 s + xác nhận 2,5 s);
 backend chỉ nhận ảnh xem trước nhỏ và đọc 128 KB đầu của ảnh gốc để kiểm tra.
-"Tải tất cả ảnh gốc" là ZIP không nén, ghi dần từng ảnh: mã kiểm tra CRC-32 dùng hàm có sẵn của
+"Tải tất cả ảnh (ZIP)" ở Đơn hàng là ZIP không nén, ghi dần từng ảnh: mã kiểm tra CRC-32 dùng hàm có sẵn của
 Node (`zlib.crc32`, nhanh hơn vòng lặp JavaScript ~8 lần, bớt khoảng 1 giây CPU mỗi ảnh 15 MB trên
 gói free), ảnh kế tiếp được tải từ R2 trong lúc ảnh này đang gửi cho khách (giữ tối đa 2 ảnh trong
 bộ nhớ). Album vượt 4 GB (khoảng 270 ảnh gốc) tự dùng ZIP64 nên tệp tải về vẫn mở được.

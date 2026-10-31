@@ -8,6 +8,7 @@ import { MAX_ORIGINAL_BYTES, storedFile } from "../services/direct-upload.js";
 export const photoBody = express.raw({
   type: ["image/jpeg", "image/png", "image/webp"],
   limit: "40mb",
+  inflate: false,
 });
 
 const fields = {

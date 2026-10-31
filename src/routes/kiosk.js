@@ -406,7 +406,7 @@ kioskRouter.post("/photo", photoBody, async (req, res) => {
 });
 // Video tua nhanh của lượt chụp (máy chụp ghép từ hình trực tiếp, đã lật gương): gửi một lần
 // sau khi chụp xong, gửi lại thì thay video cũ.
-const videoBody = express.raw({ type: ["video/webm", "video/mp4"], limit: "60mb" });
+const videoBody = express.raw({ type: ["video/webm", "video/mp4"], limit: "60mb", inflate: false });
 kioskRouter.post("/video", videoBody, async (req, res) => {
   if (!Buffer.isBuffer(req.body) || !req.body.length) fail(400, "Video trống.");
   const { b } = await captureBooking(z.string().parse(req.get("X-Capture-Token")), { authOnly: true });
@@ -422,7 +422,7 @@ kioskRouter.post("/video", videoBody, async (req, res) => {
 });
 // Ảnh đã ghép khung của lượt chụp (máy chụp ghép bản chất lượng in sau khi khách chọn khung): gửi
 // một lần, gửi lại thì thay ảnh cũ. Kèm bản xem nhanh 720 px cho album.
-const compositeBody = express.raw({ type: ["image/jpeg"], limit: "20mb" });
+const compositeBody = express.raw({ type: ["image/jpeg"], limit: "20mb", inflate: false });
 kioskRouter.post("/composite", compositeBody, async (req, res) => {
   if (!Buffer.isBuffer(req.body) || !req.body.length) fail(400, "Ảnh ghép trống.");
   const { b } = await captureBooking(z.string().parse(req.get("X-Capture-Token")), { authOnly: true });

@@ -8,6 +8,9 @@ import { sensitive } from "../middleware/rate-limits.js";
 import { fail } from "./validation.js";
 
 export const authRouter = Router();
+// Mã băm (cost 12 như mật khẩu thật) của một mật khẩu ngẫu nhiên không ai biết: tính sẵn để máy chủ
+// không phải băm lúc khởi động.
+const DUMMY_HASH = "$2b$12$xci29YOhx20ynTi9S/D9r.BEhNMA6tJrkgzVSYoGM7La5nGaEqXAa";
 
 authRouter.post("/login", sensitive(), async (req, res) => {
   const d = z
@@ -17,8 +20,9 @@ authRouter.post("/login", sensitive(), async (req, res) => {
     email: d.email.toLowerCase(),
     active: true,
   }).select("+password +sessionVersion");
-  if (!user || !(await bcrypt.compare(d.password, user.password)))
-    fail(401, "Email hoặc mật khẩu không đúng.");
+  // Email không có tài khoản vẫn so với mã băm giả: trả lời cùng thời gian như sai mật khẩu.
+  const matches = await bcrypt.compare(d.password, user?.password || DUMMY_HASH);
+  if (!user || !matches) fail(401, "Email hoặc mật khẩu không đúng.");
   setSession(res, user);
   res.json({ name: user.name, email: user.email, role: user.role, branch: user.branch || "", permissions: permissionsOf(user) });
 });

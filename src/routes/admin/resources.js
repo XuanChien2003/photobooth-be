@@ -62,7 +62,7 @@ const resources = {
       importedAt: z.string().date().or(z.literal("")).nullable().default(null),
       expiresAt: z.string().date().or(z.literal("")).nullable().default(null),
       flip: z.enum(["device", "on", "off"]).default("device"),
-      // Loại phòng chọn ở bước "Cài máy chụp"; sửa phòng không gửi thì giữ nguyên.
+      // Loại phòng chọn lúc thêm phòng; sửa phòng không gửi thì giữ nguyên.
       kind: z.enum(["photobooth", "polaroid"]).optional(),
       payment: z.enum(["counter", "cash"]).optional(),
       paymentTest: z.boolean().optional(),
