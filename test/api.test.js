@@ -237,8 +237,17 @@ test("only staff issue paid walk-in codes; multiple customers need no time slot"
 
 test("unpaid drafts have no usable code; activation is idempotent and starts the two-hour expiry", async () => {
   const requestKey = randomUUID();
-  const sale = { name: "Draft A", room: String(room._id), package: String(pack._id),
+  const sale = { name: "Draft A", phone: "0388123456", room: String(room._id), package: String(pack._id),
     requestKey, expectedTotal: pack.price };
+  // Tên và số điện thoại khách bắt buộc khi tạo phiếu tại quầy.
+  const noName = await staff.post("/api/admin/tickets/draft")
+    .send({ ...sale, name: " ", requestKey: randomUUID() }).expect(400);
+  assert.match(noName.body.message, /tên khách/);
+  const noPhone = await staff.post("/api/admin/tickets/draft")
+    .send({ ...sale, phone: "", requestKey: randomUUID() }).expect(400);
+  assert.match(noPhone.body.message, /số điện thoại khách/);
+  await staff.post("/api/admin/tickets/draft")
+    .send({ ...sale, phone: undefined, requestKey: randomUUID() }).expect(400);
   const first = await staff.post("/api/admin/tickets/draft").send(sale).expect(201);
   const second = await staff.post("/api/admin/tickets/draft")
     .send({ ...sale, name: "Draft B", requestKey: randomUUID() }).expect(201);
@@ -296,7 +305,7 @@ test("five simultaneous invalid kiosk codes cause one five-minute device lock", 
 });
 
 test("kiosk uses the paid package and only staff can sell extra prints", async () => {
-  const sale = { name: "Mellow", room: String(room._id), package: String(pack._id),
+  const sale = { name: "Mellow", phone: "0388123456", room: String(room._id), package: String(pack._id),
     requestKey: randomUUID(), expectedTotal: pack.price };
   const draft = await staff.post("/api/admin/tickets/draft").send(sale).expect(201);
   const device = jwt.sign({ type: "kiosk", room: String(room._id), jti: randomUUID() }, config.secret);
@@ -415,7 +424,7 @@ test("staff cannot read or act on another branch, including direct ticket and ki
     await staff.patch(`/api/admin/tickets/${foreign._id}/activate`)
       .send({ paymentReceived: true, paymentMethod: "cash", expectedTotal: pack.price }).expect(403);
     await staff.post("/api/admin/tickets/draft").send({
-      room: String(foreignRoom._id), package: String(pack._id),
+      name: "Khách", phone: "0388123456", room: String(foreignRoom._id), package: String(pack._id),
       requestKey: randomUUID(), expectedTotal: pack.price,
     }).expect(403);
     await staff.post(`/api/admin/rooms/${foreignRoom._id}/device`).expect(403);

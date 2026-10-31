@@ -276,8 +276,13 @@ try {
     0,
     "Không có ô chọn ngày giờ: mã dùng trong ngày",
   );
-  await ticket.getByText("Thông tin khách (không bắt buộc)").click();
-  await ticket.getByLabel("Tên khách", { exact: true }).fill("Khách thử");
+  // Tên và số điện thoại khách bắt buộc; không còn ô gợi ý phòng.
+  assert.equal(await ticket.locator("select[name=room]").count(), 0);
+  await ticket.getByRole("button", { name: "Tạo phiếu chụp" }).click();
+  await ticket.getByText("Vui lòng nhập tên khách.").waitFor();
+  await ticket.getByText("Vui lòng nhập số điện thoại khách.").waitFor();
+  await ticket.locator("input[name=name]").fill("Khách thử");
+  await ticket.locator("input[name=phone]").fill("0388123456");
   // Phản hồi của máy chủ bị mất đúng một lần: bấm lại phải ra cùng một phiếu.
   let loseDraftResponse = true;
   await counter.route("**/api/admin/tickets/draft", async (route) => {
