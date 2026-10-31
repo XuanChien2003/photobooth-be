@@ -1093,6 +1093,34 @@ export const openapi = {
         responses: { ...ok("Đã lưu", { type: "object" }, 201), ...errors(400, 401, 403, 409, 413) },
       },
     },
+    "/api/kiosk/video/upload-url": {
+      post: {
+        tags: ["Máy chụp (kiosk)"],
+        summary: "Xin URL tải video tua nhanh thẳng lên kho R2",
+        description:
+          "Chỉ có khi kho ảnh là R2 (kho MongoDB trả 404 — máy chụp gửi qua POST /api/kiosk/video). URL hết hạn sau 15 phút " +
+          "và chỉ nhận đúng loại, đúng kích thước đã xin. Tải lên xong gọi POST /api/kiosk/video/commit với `stored`.",
+        requestBody: body(
+          { captureToken: str("Mã phiên chụp"), type: enumOf(["video/mp4", "video/webm"]), size: int("Số byte (≤ 60 MB)") },
+          ["captureToken", "type", "size"],
+        ),
+        responses: {
+          ...ok("{ upload: { url, stored } }", { type: "object" }),
+          ...errors(400, 401, 404, 409),
+        },
+      },
+    },
+    "/api/kiosk/video/commit": {
+      post: {
+        tags: ["Máy chụp (kiosk)"],
+        summary: "Báo đã tải video lên kho: máy chủ kiểm tra rồi gắn vào album (thay video cũ)",
+        description:
+          "`stored` lấy từ /api/kiosk/video/upload-url của đúng phiên chụp. Tệp chưa có trên kho, quá 60 MB hoặc mã không khớp phiên " +
+          "thì trả 422 — máy chụp gửi video qua POST /api/kiosk/video.",
+        requestBody: body({ captureToken: str("Mã phiên chụp"), stored: str("Mã tệp đã tải lên") }, ["captureToken", "stored"]),
+        responses: { ...ok("{ ok, size }", { type: "object" }, 201), ...errors(400, 401, 409, 422) },
+      },
+    },
     "/api/kiosk/composite": {
       post: {
         tags: ["Máy chụp (kiosk)"],

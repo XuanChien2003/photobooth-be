@@ -4,7 +4,7 @@ import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { config } from "../../config.js";
 import { Room } from "../../models/index.js";
-import { allow, auth, requireBranch } from "../../middleware/auth.js";
+import { allow, auth, isAdmin, requireBranch } from "../../middleware/auth.js";
 import { fail, id } from "../validation.js";
 import { ticketsRouter } from "./tickets.js";
 import { printsRouter } from "./prints.js";
@@ -31,8 +31,8 @@ adminRouter.use("/storage", storageRouter);
 adminRouter.use("/shifts", shiftsRouter);
 
 // Cài máy chụp: cấp liên kết + QR mở máy chụp của phòng. Loại phòng (Photobooth / Polaroid) chọn lúc
-// quản trị thêm phòng và không đổi ở đây; phòng Photobooth bật / tắt chế độ thử đút tiền (paymentTest).
-// Không gửi paymentTest thì giữ nguyên như đang lưu.
+// quản trị thêm phòng và không đổi ở đây; phòng Photobooth bật / tắt chế độ thử đút tiền (paymentTest)
+// — chỉ quản trị viên, vì lượt chụp thử không thu tiền. Không gửi paymentTest thì giữ nguyên.
 const deviceSetup = z.object({ paymentTest: z.boolean().optional() });
 adminRouter.post("/rooms/:id/device", allow("rooms:setup"), async (req, res) => {
   const room = await Room.findById(id.parse(req.params.id));
@@ -43,7 +43,10 @@ adminRouter.post("/rooms/:id/device", allow("rooms:setup"), async (req, res) => 
   if (d.paymentTest !== undefined) {
     // Chế độ thử (nút giả lập đút tiền) chỉ có ở phòng photobooth (phòng Polaroid không thu tiền).
     const paymentTest = (room.kind || "photobooth") === "photobooth" && d.paymentTest;
-    if (Boolean(room.paymentTest) !== paymentTest) await Room.updateOne({ _id: room._id }, { paymentTest });
+    if (Boolean(room.paymentTest) !== paymentTest) {
+      if (!isAdmin(req)) fail(403, "Chỉ quản trị viên được bật / tắt chế độ thử tiền mặt.");
+      await Room.updateOne({ _id: room._id }, { paymentTest });
+    }
     room.paymentTest = paymentTest;
   }
   const kind = room.kind || "photobooth";

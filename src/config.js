@@ -29,8 +29,8 @@ export const config = {
     prefix: process.env.R2_PREFIX || "media/",
     limitGB: Number(process.env.R2_STORAGE_LIMIT_GB || 10),
   },
-  // Trang thử API (Swagger) ở /api/docs; đặt API_DOCS=false để tắt.
-  apiDocs: process.env.API_DOCS !== "false",
+  // Trang thử API (Swagger) ở /api/docs và /api/openapi.json: ẩn mặc định, đặt API_DOCS=true để mở.
+  apiDocs: process.env.API_DOCS === "true",
   frontendDist: process.env.FRONTEND_DIST
     ? path.resolve(root, process.env.FRONTEND_DIST)
     : "",

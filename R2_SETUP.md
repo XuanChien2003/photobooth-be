@@ -96,13 +96,15 @@ khi frontend/API khác miền. Backend cũ bỏ qua query và trả ảnh vẫn 
 Phản hồi album còn kèm sẵn URL thumbnail/preview/nguồn in/ảnh gốc của từng ảnh (`photos[].links`, hết hạn
 ở `until`), nên thư viện, trình chỉnh và bước ghép tờ in tải thẳng R2 mà không hỏi backend cho từng ảnh.
 
-Để chỉnh ảnh bằng canvas tải trực tiếp và **máy chụp gửi ảnh gốc thẳng lên R2** (mục 7), vào bucket
-**Settings → CORS policy** và đặt (có thể sao chép [r2-cors.json](r2-cors.json) vào ô JSON trong dashboard):
+Để chỉnh ảnh bằng canvas tải trực tiếp và **máy chụp gửi ảnh gốc, video tua nhanh thẳng lên R2** (mục 7),
+vào bucket **Settings → CORS policy** và đặt (có thể sao chép [r2-cors.json](r2-cors.json) vào ô JSON trong
+dashboard). Origin viết đúng như trình duyệt gửi: `https://tên-miền`, **không có dấu `/` ở cuối** (có dấu `/`
+thì không khớp và trình duyệt chặn tải lên):
 
 ```json
 [
   {
-    "AllowedOrigins": ["https://studio.selfbooth.workers.dev", "http://localhost:5173"],
+    "AllowedOrigins": ["https://mellowfoto.com", "https://photobooth.ngathanh.workers.dev", "http://localhost:5173"],
     "AllowedMethods": ["GET", "HEAD", "PUT"],
     "AllowedHeaders": ["Range", "Content-Type"],
     "ExposeHeaders": ["Content-Length", "Content-Type", "Content-Range"],
@@ -114,7 +116,7 @@ Phản hồi album còn kèm sẵn URL thumbnail/preview/nguồn in/ảnh gốc 
 Giữ các rule đã có nếu chúng phục vụ ứng dụng khác. Thay origin khi đổi tên miền frontend.
 Khóa chỉ có quyền đọc/ghi object có thể không được sửa CORS; khi đó đặt rule qua dashboard.
 Thiếu CORS chỉ làm trình chỉnh ảnh dùng đường backend; ảnh xem và in trực tiếp vẫn hoạt động.
-Thiếu `PUT`/`Content-Type` thì máy chụp vẫn gửi ảnh qua backend như trước (thử lại đường thẳng sau 10 phút).
+Thiếu `PUT`/`Content-Type` thì máy chụp vẫn gửi ảnh và video qua backend như trước (thử lại đường thẳng sau 10 phút).
 [Tài liệu CORS R2](https://developers.cloudflare.com/r2/buckets/cors/).
 
 ## 7. Máy chụp gửi ảnh gốc thẳng lên R2

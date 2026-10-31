@@ -1754,7 +1754,13 @@ test("invalid ticket inputs and cross-origin writes are rejected", async () => {
     .expect(400);
 });
 
-test("swagger documents every API route and can call the API from the same origin", async () => {
+test("swagger documents every API route and can call the API from the same origin", async (t) => {
+  // Ẩn mặc định: không ai mở được trang thử API hay tải tài liệu khi chưa đặt API_DOCS=true.
+  config.apiDocs = false;
+  await request(app).get("/api/docs/").expect(404);
+  await request(app).get("/api/openapi.json").expect(404);
+  config.apiDocs = true;
+  t.after(() => { config.apiDocs = false; });
   const html = await request(app).get("/api/docs/").expect(200);
   assert.match(html.text, /swagger-ui/i);
   const spec = (await request(app).get("/api/openapi.json").expect(200)).body;

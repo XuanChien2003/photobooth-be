@@ -12,7 +12,14 @@ import { instaxState, readPrinterStatus } from "../services/printer-status.js";
 import { appendCapture, finishCapture } from "../services/capture.js";
 import { timed } from "../services/image-save-queue.js";
 import { directUploadRequest, photoBody, readPhotoUpload, storedOriginal } from "./photo-upload.js";
-import { createDirectUpload, directUploadsEnabled } from "../services/direct-upload.js";
+import {
+  createDirectUpload,
+  createVideoUpload,
+  directUploadsEnabled,
+  MAX_VIDEO_BYTES,
+  storedVideo,
+  storedVideoSize,
+} from "../services/direct-upload.js";
 import { sensitive } from "../middleware/rate-limits.js";
 import { deleteMedia, saveMedia } from "../services/media.js";
 import { mediaReference } from "../services/r2.js";
@@ -406,6 +413,36 @@ kioskRouter.post("/photo", photoBody, async (req, res) => {
 });
 // Video tua nhanh của lượt chụp (máy chụp ghép từ hình trực tiếp, đã lật gương): gửi một lần
 // sau khi chụp xong, gửi lại thì thay video cũ.
+async function attachVideo(bookingId, file, mimeType, size) {
+  const old = await Booking.findOneAndUpdate(
+    { _id: bookingId },
+    { $set: { video: { file, mimeType, size } } },
+  ).select("video");
+  if (old?.video?.file && old.video.file !== file) await deleteMedia([old.video.file]).catch(() => {});
+}
+// Kho R2: máy chụp gửi video thẳng lên kho — xin URL tải lên cho đúng một video (loại, kích thước)…
+kioskRouter.post("/video/upload-url", async (req, res) => {
+  const d = z.object({
+    captureToken: z.string(),
+    type: z.enum(["video/mp4", "video/webm"]),
+    size: z.number().int().positive().max(MAX_VIDEO_BYTES),
+  }).parse(req.body);
+  if (!directUploadsEnabled()) fail(404, "Kho ảnh chưa hỗ trợ tải thẳng.");
+  const { b } = await captureBooking(d.captureToken, { authOnly: true });
+  res.json({ upload: await createVideoUpload(b._id, d.type, d.size) });
+});
+// … tải lên rồi báo xong: máy chủ chỉ kiểm tra tệp trên kho và gắn vào album. Không dùng được (422)
+// thì máy chụp gửi video qua máy chủ (route dưới).
+kioskRouter.post("/video/commit", async (req, res) => {
+  const d = z.object({ captureToken: z.string(), stored: z.string().max(200) }).parse(req.body);
+  const { b } = await captureBooking(d.captureToken, { authOnly: true });
+  const video = storedVideo(b._id, d.stored);
+  if (!video) fail(422, "Video tải thẳng lên kho không khớp phiên chụp. Máy chụp sẽ gửi lại qua máy chủ.");
+  const size = await storedVideoSize(video.file);
+  await attachVideo(b._id, video.file, video.mimeType, size);
+  res.status(201).json({ ok: true, size });
+});
+// Qua máy chủ: kho MongoDB (GridFS), hoặc trang máy chụp chưa tải thẳng lên R2 được.
 const videoBody = express.raw({ type: ["video/webm", "video/mp4"], limit: "60mb", inflate: false });
 kioskRouter.post("/video", videoBody, async (req, res) => {
   if (!Buffer.isBuffer(req.body) || !req.body.length) fail(400, "Video trống.");
@@ -413,11 +450,7 @@ kioskRouter.post("/video", videoBody, async (req, res) => {
   const mimeType = req.is("video/mp4") ? "video/mp4" : "video/webm";
   const file = mediaReference(`${crypto.randomUUID()}.${mimeType === "video/mp4" ? "mp4" : "webm"}`);
   await saveMedia(file, req.body, mimeType);
-  const old = await Booking.findOneAndUpdate(
-    { _id: b._id },
-    { $set: { video: { file, mimeType, size: req.body.length } } },
-  ).select("video");
-  if (old?.video?.file && old.video.file !== file) await deleteMedia([old.video.file]).catch(() => {});
+  await attachVideo(b._id, file, mimeType, req.body.length);
   res.status(201).json({ ok: true, size: req.body.length });
 });
 // Ảnh đã ghép khung của lượt chụp (máy chụp ghép bản chất lượng in sau khi khách chọn khung): gửi

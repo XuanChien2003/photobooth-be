@@ -36,6 +36,40 @@ export function storedFile(bookingId, clientKey, token) {
 const unusable = (message = "Ảnh gốc tải thẳng lên kho chưa dùng được. Máy chụp sẽ gửi lại qua máy chủ.") =>
   Object.assign(new Error(message), { status: 422 });
 
+// The timelapse video (up to ~48 MB) goes straight to R2 the same way: the free server (512 MB
+// RAM) no longer holds a whole video in memory, and the upload skips the web proxy and Render.
+// The booth asks for a URL for one video of an exact type and size, uploads it, then commits it;
+// the server only checks the stored file's size and attaches it to the album.
+export const MAX_VIDEO_BYTES = 60 * 1024 * 1024;
+const VIDEO_EXTENSIONS = { "video/mp4": "mp4", "video/webm": "webm" };
+const signVideo = (bookingId, name) => crypto.createHmac("sha256", config.secret)
+  .update(`direct-video\n${bookingId}\n${name}`).digest("base64url");
+
+export async function createVideoUpload(bookingId, type, size) {
+  const name = `${crypto.randomUUID()}.${VIDEO_EXTENSIONS[type]}`;
+  const url = await r2Storage.signedPut(mediaReference(name), UPLOAD_SECONDS, type, size);
+  return { url, stored: `${name}.${signVideo(String(bookingId), name)}` };
+}
+
+// The file a commit names, only if this server issued it for this session.
+export function storedVideo(bookingId, token) {
+  const match = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(mp4|webm))\.([A-Za-z0-9_-]{43})$/
+    .exec(token || "");
+  if (!match) return null;
+  const expected = Buffer.from(signVideo(String(bookingId), match[1]));
+  if (!crypto.timingSafeEqual(Buffer.from(match[3]), expected)) return null;
+  return { file: mediaReference(match[1]), mimeType: match[2] === "mp4" ? "video/mp4" : "video/webm" };
+}
+
+// Size of the uploaded video (one HEAD request); not there yet or too large: 422.
+export async function storedVideoSize(file) {
+  const head = await r2Storage.head(file);
+  const size = Number(head?.ContentLength);
+  if (!(size > 0) || size > MAX_VIDEO_BYTES)
+    throw unusable("Video chưa tải lên kho xong. Máy chụp sẽ gửi lại qua máy chủ.");
+  return size;
+}
+
 // Reads only the start of the stored original: its size, a clean header and its metadata.
 export async function inspectStoredOriginal(file) {
   const result = await r2Storage.get(file, `bytes=0-${HEAD_BYTES - 1}`);

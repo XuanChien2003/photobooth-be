@@ -229,13 +229,20 @@ test("custom filters are validated and published in the catalog settings", async
   assert.deepEqual(settings.customFilters, [{ ...filter, active: true }]);
 });
 
-test("the room kind is set when the room is saved; kiosk setup only toggles the photobooth test mode", async () => {
-  const setup = (body) => staff.post(`/api/admin/rooms/${room._id}/device`).send(body);
+test("the room kind is set when the room is saved; only admins switch the photobooth test mode", async () => {
+  const setup = (body, as = admin) => as.post(`/api/admin/rooms/${room._id}/device`).send(body);
   const saveRoom = (kind) => admin.put(`/api/admin/rooms/${room._id}`).send({
     name: "Máy 1", description: "", branch: "Bắc Giang", kind, active: true,
   }).expect(200);
+  // Lễ tân (quyền Cài máy chụp) lấy được liên kết nhưng không tự bật chế độ thử (khách chụp không trả tiền).
+  const refused = await setup({ paymentTest: true }, staff).expect(403);
+  assert.match(refused.body.message, /Chỉ quản trị viên/);
+  assert.equal(Boolean((await Room.findById(room._id).lean()).paymentTest), false);
   const booth = (await setup({ paymentTest: true }).expect(200)).body;
   assert.deepEqual([booth.kind, booth.paymentTest], ["photobooth", true]);
+  // Gửi đúng trạng thái đang lưu (không đổi gì) thì lễ tân vẫn cài máy được.
+  assert.equal((await setup({ paymentTest: true }, staff).expect(200)).body.paymentTest, true);
+  await setup({ paymentTest: false }, staff).expect(403);
   const ping = (await request(app).post("/api/kiosk/ping").send({ device: booth.token }).expect(200)).body;
   assert.equal(ping.room.kind, "photobooth");
   assert.equal(ping.room.paymentTest, true);
@@ -246,7 +253,7 @@ test("the room kind is set when the room is saved; kiosk setup only toggles the 
   assert.equal((await Room.findById(room._id).lean()).kind, "photobooth");
   // Phòng Polaroid (quản trị lưu phòng): không thu tiền tại máy, không có chế độ thử.
   await saveRoom("polaroid");
-  const polaroid = (await setup({}).expect(200)).body;
+  const polaroid = (await setup({}, staff).expect(200)).body;
   assert.deepEqual([polaroid.kind, polaroid.paymentTest], ["polaroid", false]);
   const pinged = (await request(app).post("/api/kiosk/ping").send({ device: polaroid.token }).expect(200)).body;
   assert.deepEqual([pinged.room.kind, pinged.room.cashCheckoutReady], ["polaroid", false]);
