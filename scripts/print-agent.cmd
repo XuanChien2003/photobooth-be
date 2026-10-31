@@ -4,7 +4,7 @@ title Photobooth - In tu dong (DNP / Instax)
 rem Chuong trinh in tu dong tai quay: nhan lenh in tu web va in ra may DNP DS-RX1.
 rem Chay tren may tinh Windows cam may in DNP (can Node.js 20+). Dien PRINT_AGENT_API_URL,
 rem PRINT_AGENT_BRANCH, PRINT_AGENT_TOKEN, DNP_PRINTER_NAME (va DNP_STRIP_PRINTER_NAME) vao
-rem file .env canh thu muc scripts (xem .env.example). May Instax mini Link 3: them INSTAX_ADDRESS
+rem file .env canh thu muc scripts (xem .env.example). May Instax mini Link 3 / Link WIDE: them INSTAX_ADDRESS
 rem va INSTAX_PYTHON (xem README). Bam dup file nay, hoac dat loi tat vao
 rem thu muc Startup (Win + R, go shell:startup) de tu chay khi bat may.
 cd /d "%~dp0.."
