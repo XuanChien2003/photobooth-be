@@ -250,10 +250,7 @@ try {
   await signIn(admin, "admin@test.local");
   await menu(admin, "Quản lý máy").click();
   await admin.getByRole("button", { name: /^Cài máy chụp cho / }).click();
-  // Bước 1: chọn loại hình chụp (photobooth: nhập mã hoặc tiền mặt, in DNP), rồi mới có liên kết và QR.
-  const setupDialog = admin.getByRole("dialog", { name: "Cài máy chụp" });
-  await setupDialog.getByRole("radio", { name: /Photobooth/ }).check();
-  await setupDialog.getByRole("button", { name: "Tiếp tục: lấy liên kết & QR" }).click();
+  // Mở thẳng liên kết và QR (loại phòng đã chọn lúc thêm phòng).
   const kioskUrl = await admin
     .getByRole("link", { name: "Mở máy chụp", exact: true })
     .getAttribute("href");
