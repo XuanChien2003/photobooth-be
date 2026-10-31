@@ -1047,3 +1047,57 @@ test("a booth uploads the camera original straight to storage and commits only i
       .send({ clientKey: "direct-photo-8", size: 10 }).expect(404);
   } finally { signer.mock.restore(); }
 });
+
+test("a booth uploads the timelapse video straight to storage; the server only checks and attaches it", async () => {
+  enableR2();
+  const sessionId = "video-session";
+  const b = await Booking.create({
+    code: randomUUID(), accessToken: randomUUID(), status: "completed", captureSession: sessionId,
+    video: { file: "r2:media/old-video.webm", mimeType: "video/webm", size: 3 },
+  });
+  objects.set("media/old-video.webm", { bytes: Buffer.from("old"), type: "video/webm", modified: Date.now() });
+  const captureToken = jwt.sign({ type: "capture", booking: String(b._id), sessionId }, config.secret);
+  const puts = [];
+  const signer = mock.method(r2Storage, "signedPut", async (file, seconds, type, size) => {
+    puts.push({ file, seconds, type, size });
+    return `https://test-media.${"a".repeat(32)}.r2.cloudflarestorage.com/${file.slice(3)}?X-Amz-Signature=test`;
+  });
+  const video = Buffer.alloc(4096, 7);
+  const ticket = (body) => request(app).post("/api/kiosk/video/upload-url").send({ captureToken, ...body });
+  const commit = (stored, token = captureToken) =>
+    request(app).post("/api/kiosk/video/commit").send({ captureToken: token, stored });
+  try {
+    const { body: first } = await ticket({ type: "video/mp4", size: video.length }).expect(200);
+    assert.equal(puts[0].type, "video/mp4");
+    assert.equal(puts[0].size, video.length, "the URL only accepts exactly this video");
+    assert.ok(puts[0].seconds <= 15 * 60);
+    assert.match(puts[0].file, /^r2:media\/[0-9a-f-]{36}\.mp4$/);
+    assert.match(first.upload.url, /\.r2\.cloudflarestorage\.com\//);
+    // Chưa tải lên kho: 422, máy chụp gửi video qua máy chủ.
+    await commit(first.upload.stored).expect(422);
+    objects.set(puts[0].file.slice(3), { bytes: video, type: "video/mp4", modified: Date.now() });
+    calls = [];
+    assert.deepEqual((await commit(first.upload.stored).expect(201)).body, { ok: true, size: video.length });
+    assert.equal(calls.some((c) => c.type === "PutObjectCommand"), false, "the server never uploads the video itself");
+    const stored = await Booking.findById(b._id).lean();
+    assert.deepEqual(stored.video, { file: puts[0].file, mimeType: "video/mp4", size: video.length });
+    assert.equal(objects.has("media/old-video.webm"), false, "the replaced video is removed");
+    const served = await request(app).get(`/api/albums/${b.accessToken}/video`).expect(200);
+    assert.equal(served.headers["content-type"], "video/mp4");
+    assert.equal(served.body.length, video.length);
+    // Mã tải lên chỉ dùng cho đúng phiên chụp đã xin.
+    await commit(first.upload.stored.slice(0, -1) + (first.upload.stored.endsWith("A") ? "B" : "A")).expect(422);
+    await commit("not-a-token").expect(422);
+    const other = await Booking.create({
+      code: randomUUID(), accessToken: randomUUID(), status: "completed", captureSession: "other-session",
+    });
+    const otherToken = jwt.sign({ type: "capture", booking: String(other._id), sessionId: "other-session" }, config.secret);
+    await commit(first.upload.stored, otherToken).expect(422);
+    assert.equal((await Booking.findById(other._id).lean()).video, undefined);
+    // Quá 60 MB, sai loại, hoặc kho MongoDB (không tải thẳng): không cấp URL.
+    await ticket({ type: "video/mp4", size: 61 * 1024 * 1024 }).expect(400);
+    await ticket({ type: "video/quicktime", size: 10 }).expect(400);
+    config.mediaStorageProvider = "gridfs";
+    await ticket({ type: "video/mp4", size: 10 }).expect(404);
+  } finally { signer.mock.restore(); }
+});

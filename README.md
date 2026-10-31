@@ -7,7 +7,8 @@ API cho hệ thống **nội bộ** của tiệm photobooth: lễ tân cấp mã
 (kiosk), khách quét QR trên máy chụp để nhận ảnh trên điện thoại, lễ tân in ảnh 10 × 15 cm.
 Không có trang công khai (không đặt lịch, không tra cứu mã vé trên web).
 
-Album của khách chỉ để xem và tải: ảnh ghép khung, video tua nhanh, ảnh gốc và ZIP. Chọn ảnh, ghép
+Album của khách chỉ để xem và lưu vào máy: ảnh ghép khung, video tua nhanh, ảnh gốc (ZIP ảnh gốc
+`/api/albums/:token/download` giờ chỉ còn ở menu "Tải ảnh" của Đơn hàng). Chọn ảnh, ghép
 khung và in đều làm ở máy chụp; máy chụp gửi bổ sung ảnh còn kẹt do mất mạng vào album qua
 `POST /api/albums/:token/photos`.
 
@@ -29,16 +30,17 @@ npm test
 
 ## Thử API bằng Swagger
 
-Mở **`/api/docs`** trên máy chủ (vd. http://localhost:8080/api/docs, hoặc `https://<máy chủ Render>/api/docs`).
-Tài liệu gốc (OpenAPI 3) ở `/api/openapi.json`, viết trong `src/openapi.js`.
+Trang này **ẩn mặc định** (`/api/docs` và `/api/openapi.json` trả 404). Muốn dùng thì đặt biến môi trường
+`API_DOCS=true` (máy chạy thử, hoặc tạm thời trên Render rồi bỏ đi), rồi mở **`/api/docs`** trên máy chủ
+(vd. http://localhost:8080/api/docs). Tài liệu gốc (OpenAPI 3) ở `/api/openapi.json`, viết trong `src/openapi.js`.
 
 1. Nhóm **Đăng nhập → POST /api/auth/login** → _Try it out_ → nhập email / mật khẩu → _Execute_. Trình duyệt lưu
    cookie phiên, các API có ổ khóa sau đó tự gửi kèm (nút _Authorize_ không cần dùng).
 2. Mở API muốn thử → _Try it out_ → sửa dữ liệu mẫu → _Execute_.
 
 Trang Swagger chạy cùng địa chỉ với máy chủ nên được phép gửi lệnh ghi (POST/PUT/DELETE) dù không nằm trong
-`CLIENT_URL`. Đây là dữ liệu thật của tiệm: vé thử tính vào doanh thu — hủy vé thử sau khi xong. Đặt `API_DOCS=false`
-để tắt trang này. Test `swagger documents every API route…` báo lỗi nếu thêm API mới mà quên ghi vào `src/openapi.js`.
+`CLIENT_URL`. Đây là dữ liệu thật của tiệm: vé thử tính vào doanh thu — hủy vé thử sau khi xong. Bỏ `API_DOCS`
+(hoặc đặt khác `true`) để ẩn lại trang này. Test `swagger documents every API route…` báo lỗi nếu thêm API mới mà quên ghi vào `src/openapi.js`.
 
 ## Luật vận hành chính
 
@@ -115,7 +117,11 @@ cho phép PUT — xem R2_SETUP.md mục 7. Đo thật ngày 17/10/2026 (ảnh 26
 Render mất ~27–29 giây tới khi "đã lưu" (riêng đẩy 15 MB qua proxy web tới Render ~23 giây), thẳng R2 ~5 giây
 (xin URL 0,4 s + tải lên R2 2,3 s + xác nhận 2,5 s);
 backend chỉ nhận ảnh xem trước nhỏ và đọc 128 KB đầu của ảnh gốc để kiểm tra.
-"Tải tất cả ảnh gốc" là ZIP không nén, ghi dần từng ảnh: mã kiểm tra CRC-32 dùng hàm có sẵn của
+**Video tua nhanh (tới ~48 MB) cũng đi thẳng lên R2**: máy chụp xin URL ở `POST /api/kiosk/video/upload-url`
+(đúng loại MP4 / WebM, đúng kích thước, hết hạn 15 phút), tải lên rồi `POST /api/kiosk/video/commit`; backend chỉ
+hỏi kích thước tệp (HEAD) rồi gắn vào album, không giữ video trong bộ nhớ. Kho MongoDB, trang chưa được CORS cho
+`PUT`, hoặc tệp trên kho không dùng được (422): máy chụp gửi qua `POST /api/kiosk/video` như trước.
+"Tải tất cả ảnh (ZIP)" ở Đơn hàng là ZIP không nén, ghi dần từng ảnh: mã kiểm tra CRC-32 dùng hàm có sẵn của
 Node (`zlib.crc32`, nhanh hơn vòng lặp JavaScript ~8 lần, bớt khoảng 1 giây CPU mỗi ảnh 15 MB trên
 gói free), ảnh kế tiếp được tải từ R2 trong lúc ảnh này đang gửi cho khách (giữ tối đa 2 ảnh trong
 bộ nhớ). Album vượt 4 GB (khoảng 270 ảnh gốc) tự dùng ZIP64 nên tệp tải về vẫn mở được.

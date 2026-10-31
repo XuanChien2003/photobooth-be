@@ -6,7 +6,7 @@ import { fail } from "./validation.js";
 // Print sheets travel as raw bytes (about a quarter smaller than base64 JSON, and no 12 MB
 // strings to parse): the body is the sheets one after another, X-Print-Sheets lists their sizes.
 // Saved attempts from older pages still arrive as JSON data URLs.
-export const printBody = express.raw({ type: "application/octet-stream", limit: "64mb" });
+export const printBody = express.raw({ type: "application/octet-stream", limit: "64mb", inflate: false });
 
 const MAX_SHEETS = 100;
 const MAX_SHEET_BYTES = 9_000_000; // the JSON limit: 12 M base64 characters

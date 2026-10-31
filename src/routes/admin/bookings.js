@@ -12,6 +12,10 @@ import { publicJob } from "../print-helpers.js";
 import { extraPriceFor } from "../print-count.js";
 
 export const bookingsRouter = Router();
+// Đơn hàng xem theo khoảng ngày (mặc định cả tháng này): tối đa bấy nhiêu đơn mới nhất.
+export const BOOKING_RANGE_LIMIT = 2000;
+const LIST_OMIT = "-photos -cashBills -extraSales -captureSeenAt -captureStartedAt -captureEndsAt " +
+  "-nextPhotoNumber -codeExpiresAt -updatedAt";
 
 bookingsRouter.get("/bookings", async (req, res) => {
   const q = {};
@@ -36,14 +40,18 @@ bookingsRouter.get("/bookings", async (req, res) => {
     q.roomName = z.string().trim().min(1).max(200).parse(req.query.room);
   if (req.query.paymentMethod)
     q.paymentMethod = z.enum(["cash", "transfer"]).parse(req.query.paymentMethod);
-  // Danh sách tự làm mới 20 giây/lần ở nhiều màn hình: không kèm mảng ảnh (giao diện không dùng)
-  // và chẩn đoán máy chụp; tra đúng một mã vé (Swagger) mới trả đủ để xem máy chụp đang thấy gì.
+  // Danh sách tự làm mới ở nhiều màn hình: không kèm mảng ảnh, tiền từng tờ, chẩn đoán máy chụp và
+  // các mốc máy chụp cập nhật vài giây một lần (captureSeenAt, updatedAt…) — giao diện không dùng, và
+  // nhờ vậy lần làm mới không có gì đổi được trả 304 rỗng. Tra đúng một mã vé (Swagger) mới trả đủ
+  // để xem máy chụp đang thấy gì. Xem theo khoảng ngày (cả tháng) trả tới BOOKING_RANGE_LIMIT đơn.
   const list = await Booking.find(q)
-    .select(q.code ? "+accessToken +captureDiag" : "+accessToken -photos")
+    .select(q.code ? "+accessToken +captureDiag" : `+accessToken ${LIST_OMIT}`)
     .sort({ createdAt: -1 })
-    .limit(500)
+    .limit(q.date?.$gte || q.date?.$lte ? BOOKING_RANGE_LIMIT : 500)
     .lean();
   const ids = list.map((booking) => booking._id);
+  // Ảnh đại diện từ ảnh gốc chỉ cần cho đơn chưa có ảnh ghép khung.
+  const uncovered = list.filter((booking) => !booking.composite?.file).map((booking) => booking._id);
   // Ảnh đại diện của đơn: ảnh đã ghép khung (ảnh máy chụp ghép, rồi tới lệnh in gần nhất), chưa có
   // thì tấm đầu tiên còn hạn.
   // Hai truy vấn chạy song song nên danh sách không chậm thêm một lượt đi về.
@@ -55,15 +63,15 @@ bookingsRouter.get("/bookings", async (req, res) => {
         })
           .sort({ createdAt: -1 })
           .lean(),
-        Booking.aggregate([
-          { $match: { _id: { $in: ids }, mediaDeleted: { $ne: true } } },
+        uncovered.length ? Booking.aggregate([
+          { $match: { _id: { $in: uncovered }, mediaDeleted: { $ne: true } } },
           { $project: { photos: { $slice: [{ $filter: {
             input: { $ifNull: ["$photos", []] },
             as: "p",
             cond: { $and: [{ $eq: ["$$p.kind", "original"] }, { $ne: ["$$p.deleted", true] }] },
           } }, 5] } } },
           { $project: { "photos._id": 1 } },
-        ]),
+        ]) : [],
       ])
     : [[], []];
   const now = Date.now();

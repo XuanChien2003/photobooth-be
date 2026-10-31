@@ -20,24 +20,25 @@ import { screenListItem } from "./admin/studio.js";
 
 export const publicRouter = Router();
 
-// Thử API trên trình duyệt: /api/docs (Swagger UI), tài liệu gốc ở /api/openapi.json.
-if (config.apiDocs) {
-  publicRouter.get("/openapi.json", (req, res) => res.json(openapi));
-  publicRouter.use(
-    "/docs",
-    swaggerUi.serve,
-    swaggerUi.setup(openapi, {
-      customSiteTitle: "NXC Photobooth API",
-      swaggerOptions: {
-        docExpansion: "none",
-        filter: true,
-        tryItOutEnabled: true,
-        displayRequestDuration: true,
-        persistAuthorization: true,
-      },
-    }),
-  );
-}
+// Thử API trên trình duyệt: /api/docs (Swagger UI), tài liệu gốc ở /api/openapi.json. Ẩn mặc định
+// (trả 404 như đường dẫn không tồn tại); chỉ mở khi đặt API_DOCS=true (config.apiDocs).
+const docsRouter = Router();
+docsRouter.get("/openapi.json", (req, res) => res.json(openapi));
+docsRouter.use(
+  "/docs",
+  swaggerUi.serve,
+  swaggerUi.setup(openapi, {
+    customSiteTitle: "NXC Photobooth API",
+    swaggerOptions: {
+      docExpansion: "none",
+      filter: true,
+      tryItOutEnabled: true,
+      displayRequestDuration: true,
+      persistAuthorization: true,
+    },
+  }),
+);
+publicRouter.use((req, res, next) => (config.apiDocs ? docsRouter(req, res, next) : next()));
 publicRouter.get("/health", async (req, res) => {
   // ?db=1: also time one database round trip (Server-Timing: db) to see how far it is.
   if (req.query.db === "1" && mongoose.connection.readyState === 1) {

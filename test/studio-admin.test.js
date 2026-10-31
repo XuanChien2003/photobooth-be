@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import zlib from "node:zlib";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import mongoose from "mongoose";
@@ -228,23 +229,38 @@ test("custom filters are validated and published in the catalog settings", async
   assert.deepEqual(settings.customFilters, [{ ...filter, active: true }]);
 });
 
-test("setting up a kiosk picks the room kind first (photobooth / polaroid); test mode only in photobooth", async () => {
-  const setup = (body) => staff.post(`/api/admin/rooms/${room._id}/device`).send(body);
-  const booth = (await setup({ kind: "photobooth", paymentTest: true }).expect(200)).body;
+test("the room kind is set when the room is saved; only admins switch the photobooth test mode", async () => {
+  const setup = (body, as = admin) => as.post(`/api/admin/rooms/${room._id}/device`).send(body);
+  const saveRoom = (kind) => admin.put(`/api/admin/rooms/${room._id}`).send({
+    name: "Máy 1", description: "", branch: "Bắc Giang", kind, active: true,
+  }).expect(200);
+  // Lễ tân (quyền Cài máy chụp) lấy được liên kết nhưng không tự bật chế độ thử (khách chụp không trả tiền).
+  const refused = await setup({ paymentTest: true }, staff).expect(403);
+  assert.match(refused.body.message, /Chỉ quản trị viên/);
+  assert.equal(Boolean((await Room.findById(room._id).lean()).paymentTest), false);
+  const booth = (await setup({ paymentTest: true }).expect(200)).body;
   assert.deepEqual([booth.kind, booth.paymentTest], ["photobooth", true]);
+  // Gửi đúng trạng thái đang lưu (không đổi gì) thì lễ tân vẫn cài máy được.
+  assert.equal((await setup({ paymentTest: true }, staff).expect(200)).body.paymentTest, true);
+  await setup({ paymentTest: false }, staff).expect(403);
   const ping = (await request(app).post("/api/kiosk/ping").send({ device: booth.token }).expect(200)).body;
   assert.equal(ping.room.kind, "photobooth");
   assert.equal(ping.room.paymentTest, true);
   assert.equal(ping.room.cashCheckoutReady, true);
-  // Phòng Polaroid: không thu tiền tại máy, chế độ thử tự tắt. Không gửi loại phòng: giữ nguyên.
-  const polaroid = (await setup({ kind: "polaroid", paymentTest: true }).expect(200)).body;
+  // "Cài máy chụp" không đổi loại phòng (loại phòng chọn lúc thêm phòng), kể cả khi gửi kèm.
+  const ignored = (await setup({ kind: "polaroid" }).expect(200)).body;
+  assert.deepEqual([ignored.kind, ignored.paymentTest], ["photobooth", true]);
+  assert.equal((await Room.findById(room._id).lean()).kind, "photobooth");
+  // Phòng Polaroid (quản trị lưu phòng): không thu tiền tại máy, không có chế độ thử.
+  await saveRoom("polaroid");
+  const polaroid = (await setup({}, staff).expect(200)).body;
   assert.deepEqual([polaroid.kind, polaroid.paymentTest], ["polaroid", false]);
   const pinged = (await request(app).post("/api/kiosk/ping").send({ device: polaroid.token }).expect(200)).body;
   assert.deepEqual([pinged.room.kind, pinged.room.cashCheckoutReady], ["polaroid", false]);
-  const kept = (await setup({}).expect(200)).body;
-  assert.deepEqual([kept.kind, kept.paymentTest], ["polaroid", false]);
-  await setup({ kind: "selfie" }).expect(400);
-  await setup({ kind: "photobooth" }).expect(200);
+  assert.equal((await setup({ paymentTest: true }).expect(200)).body.paymentTest, false);
+  await setup({ paymentTest: "yes" }).expect(400);
+  await saveRoom("photobooth");
+  await setup({ paymentTest: false }).expect(200);
   const saved = await Room.findById(room._id).lean();
   assert.deepEqual([saved.kind, saved.paymentTest], ["photobooth", false]);
 });
@@ -454,7 +470,9 @@ test("Instax: two prints minimum, its own extra price, and the kiosk sells it on
   assert.ok(stored.paidAt);
   await staff.patch(`/api/admin/bookings/${stored._id}`).send({ collected: "cash" }).expect(409);
   // Phòng photobooth không mở lượt Polaroid.
-  await staff.post(`/api/admin/rooms/${room._id}/device`).send({ kind: "photobooth" }).expect(200);
+  await admin.put(`/api/admin/rooms/${room._id}`).send({
+    name: "Máy 1", description: "", branch: "Bắc Giang", kind: "photobooth", paymentTest: false, active: true,
+  }).expect(200);
   await request(app).post("/api/kiosk/polaroid").send({ ...layout, requestKey: randomUUID() }).expect(403);
 
   await Setting.updateOne({ key: "studio" }, { $unset: { "value.extraPrintPrice": 1, "value.extraInstaxPrice": 1 } });
@@ -629,5 +647,44 @@ test("a room is deleted for good only after it was stopped; staff cannot delete 
     await admin.delete(`/api/admin/rooms/${spare._id}/permanent`).expect(404);
   } finally {
     await Room.deleteOne({ _id: spare._id });
+  }
+});
+
+test("request bodies: 1 MB unless signed in to admin; compressed bodies are refused", async () => {
+  await request(app).post("/api/auth/login")
+    .send({ email: "a@b.vn", password: "x".repeat(1_200_000) }).expect(413);
+  // Chưa đăng nhập: body lớn gửi tới quản trị không được đọc, chỉ báo cần đăng nhập.
+  await request(app).put("/api/admin/settings/kiosk").send({ idleImage: "x".repeat(2_000_000) }).expect(401);
+  // Đã đăng nhập: quản trị gửi được ảnh base64 vài MB (dữ liệu sai nên 400, không phải 413).
+  const signedIn = await admin.put("/api/admin/settings/kiosk").send({ idleImage: "x".repeat(2_000_000) });
+  assert.equal(signedIn.status, 400, JSON.stringify(signedIn.body));
+  // Phiếu tại quầy (route tự kiểm tra đăng nhập) vẫn đọc body JSON thường.
+  await staff.post("/api/admin/tickets/quote").send({ package: String(pack._id) }).expect(200);
+  const zipped = zlib.gzipSync(JSON.stringify({ email: "a@b.vn", password: "x" }));
+  const refused = await request(app).post("/api/auth/login")
+    .set("Content-Type", "application/json").set("Content-Encoding", "gzip").send(zipped).expect(415);
+  assert.match(refused.body.message, /dữ liệu nén/);
+});
+
+test("the orders list for a date range leaves out what the booth updates every few seconds", async () => {
+  const day = today();
+  const b = await Booking.create({
+    code: "424242", name: "Khách", branch: "Bắc Giang", date: day, status: "checked_in", total: 100000,
+    paid: true, captureSeenAt: new Date(), cashBills: [{ amount: 100000, at: new Date() }], accessToken: "t".repeat(48),
+  });
+  try {
+    const path = `/api/admin/bookings?from=${day.slice(0, 8)}01&to=${day}`;
+    const first = await admin.get(path).expect(200);
+    const item = first.body.find((entry) => entry._id === String(b._id));
+    assert.equal(item.accessToken, "t".repeat(48));
+    assert.equal(item.total, 100000);
+    for (const key of ["captureSeenAt", "updatedAt", "cashBills", "photos"])
+      assert.equal(item[key], undefined, key);
+    // Máy chụp chỉ báo "còn sống": danh sách không đổi, cùng ETag (lần làm mới nhận 304 rỗng).
+    await Booking.updateOne({ _id: b._id }, { $set: { captureSeenAt: new Date(Date.now() + 5000) } });
+    const second = await admin.get(path).expect(200);
+    assert.equal(second.headers.etag, first.headers.etag);
+  } finally {
+    await Booking.deleteOne({ _id: b._id });
   }
 });
