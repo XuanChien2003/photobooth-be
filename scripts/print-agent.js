@@ -12,7 +12,7 @@ const mac = process.platform === "darwin";
 if (!(mac || process.platform === "win32") || !/^https:\/\//.test(api) || !branch || token.length < 32)
   throw new Error("Cần Windows hoặc macOS, PRINT_AGENT_API_URL (HTTPS), PRINT_AGENT_BRANCH và PRINT_AGENT_TOKEN dài ít nhất 32 ký tự.");
 
-// Máy Instax mini Link 3 cạnh máy chụp (Bluetooth Classic): INSTAX_ADDRESS là địa chỉ của máy in,
+// Máy Instax mini Link 3 / Link WIDE cạnh máy chụp (Bluetooth): INSTAX_ADDRESS là địa chỉ của máy in,
 // INSTAX_PYTHON là python của virtualenv đã cài instax-sdk.
 const instaxAddress = (process.env.INSTAX_ADDRESS || "").trim();
 const instax = instaxAddress
