@@ -268,7 +268,7 @@ test("kiosks report online with the remote flip mode; packages can be limited to
   await admin.put(`/api/admin/packages/${pack._id}`).send({
     name: "Gói 1", description: "", price: 100000, duration: 10, prints: 2, branches: ["Hà Nội"], active: true,
   }).expect(200);
-  const draft = { name: "Khách", phone: "", room: "", branch: "", package: String(pack._id), requestKey: randomUUID() };
+  const draft = { name: "Khách", phone: "0388123456", room: "", branch: "", package: String(pack._id), requestKey: randomUUID() };
   const refused = await staff.post("/api/admin/tickets/draft").send(draft).expect(400);
   assert.match(refused.body.message, /không áp dụng tại chi nhánh Bắc Giang/);
   await admin.put(`/api/admin/packages/${pack._id}`).send({
@@ -286,7 +286,7 @@ test("packages snapshot how many photos the guest picks; the kiosk uploads one t
     name: "Gói 1", description: "", price: 100000, duration: 10, prints: 2, selectCount: 40, active: true,
   }).expect(400);
   const draft = (await staff.post("/api/admin/tickets/draft").send({
-    name: "Khách", phone: "", room: "", branch: "", package: String(pack._id), requestKey: randomUUID(),
+    name: "Khách", phone: "0388123456", room: "", branch: "", package: String(pack._id), requestKey: randomUUID(),
   }).expect(201)).body;
   assert.equal((await Booking.findById(draft._id).lean()).selectCount, 6);
 

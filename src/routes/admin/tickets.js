@@ -10,9 +10,11 @@ import { publicBooking } from "../booking-helpers.js";
 export const ticketsRouter = Router();
 const CODE_LIFETIME_MS = 2 * 60 * 60 * 1000;
 
+// Phiếu tại quầy bắt buộc tên và số điện thoại khách (tra cứu lại album).
 const draftSchema = z.object({
-  name: z.string().trim().max(100).default(""),
-  phone: z.union([phone, z.literal("")]).default(""),
+  name: z.string({ error: "Vui lòng nhập tên khách." }).trim().min(1, "Vui lòng nhập tên khách.").max(100),
+  phone: z.string({ error: "Vui lòng nhập số điện thoại khách." }).trim()
+    .min(1, "Vui lòng nhập số điện thoại khách.").pipe(phone),
   room: z.union([id, z.literal("")]).default(""),
   branch: z.string().trim().max(200).default(""),
   package: id,
