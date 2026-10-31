@@ -607,7 +607,7 @@ test("a counter code never sells a Polaroid layout (Instax): photobooth codes pr
   });
   try {
     const refused = await staff.post("/api/admin/tickets").send({
-      name: "Khách", phone: "", room: "", branch: "Bắc Giang", package: String(layout._id), requestKey: randomUUID(),
+      name: "Khách", phone: "0388123456", room: "", branch: "Bắc Giang", package: String(layout._id), requestKey: randomUUID(),
       paymentMethod: "cash", paymentReceived: true,
     });
     assert.equal(refused.status, 400, JSON.stringify(refused.body));

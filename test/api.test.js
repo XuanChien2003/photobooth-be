@@ -224,11 +224,17 @@ test("only staff issue paid walk-in codes; multiple customers need no time slot"
     .expect(200);
   assert.equal(album.body.code, b.code, "the QR link opens the ticket album");
   await request(app).post(`/api/albums/${b.accessToken}/cancel`).expect(404);
+  // Tên và số điện thoại khách bắt buộc ở cả cấp mã trực tiếp.
   const anonymous = await staff
     .post("/api/admin/tickets")
     .send({ ...bookingData(), name: "", phone: "" })
-    .expect(201);
-  assert.equal(anonymous.body.name, "Khách tại quầy");
+    .expect(400);
+  assert.match(anonymous.body.message, /tên khách/);
+  const noPhone = await staff
+    .post("/api/admin/tickets")
+    .send({ ...bookingData(), phone: undefined })
+    .expect(400);
+  assert.match(noPhone.body.message, /số điện thoại khách/);
   await staff
     .post("/api/admin/tickets")
     .send({ ...bookingData(), paymentReceived: false })

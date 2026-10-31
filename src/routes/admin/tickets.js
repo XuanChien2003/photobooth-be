@@ -11,10 +11,13 @@ export const ticketsRouter = Router();
 const CODE_LIFETIME_MS = 2 * 60 * 60 * 1000;
 
 // Phiếu tại quầy bắt buộc tên và số điện thoại khách (tra cứu lại album).
+const customerName = z.string({ error: "Vui lòng nhập tên khách." }).trim()
+  .min(1, "Vui lòng nhập tên khách.").max(100);
+const customerPhone = z.string({ error: "Vui lòng nhập số điện thoại khách." }).trim()
+  .min(1, "Vui lòng nhập số điện thoại khách.").pipe(phone);
 const draftSchema = z.object({
-  name: z.string({ error: "Vui lòng nhập tên khách." }).trim().min(1, "Vui lòng nhập tên khách.").max(100),
-  phone: z.string({ error: "Vui lòng nhập số điện thoại khách." }).trim()
-    .min(1, "Vui lòng nhập số điện thoại khách.").pipe(phone),
+  name: customerName,
+  phone: customerPhone,
   room: z.union([id, z.literal("")]).default(""),
   branch: z.string().trim().max(200).default(""),
   package: id,
@@ -60,7 +63,7 @@ ticketsRouter.post("/draft", auth, bookingLimit, async (req, res) => {
     fail(409, "Giá gói vừa thay đổi. Vui lòng kiểm tra lại số tiền.");
   try {
     const b = await Booking.create({
-      name: d.name || "Khách tại quầy",
+      name: d.name,
       phone: d.phone,
       room: room?._id,
       roomName: room?.name || "",
@@ -155,9 +158,9 @@ ticketsRouter.post("/", auth, bookingLimit, async (req, res) => {
   const assigned = staffBranch(req);
   const d = z
     .object({
-      name: z.string().trim().max(100).default(""),
-      phone: z.union([phone, z.literal("")]).default(""),
-      // Mã dùng ở phòng nào cũng được; lễ tân chỉ gợi ý phòng đang trống (không bắt buộc).
+      name: customerName,
+      phone: customerPhone,
+      // Mã dùng ở phòng nào cũng được; phòng gửi kèm (nếu có) chỉ để gợi ý.
       room: z.union([id, z.literal("")]).default(""),
       branch: z.string().trim().max(200).default(""),
       package: id,
@@ -218,7 +221,7 @@ ticketsRouter.post("/", auth, bookingLimit, async (req, res) => {
     try {
       b = await Booking.create({
         ...d,
-        name: d.name || "Khách tại quầy",
+        name: d.name,
         date: today(),
         time: "",
         status: "confirmed",
