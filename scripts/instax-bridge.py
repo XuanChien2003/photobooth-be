@@ -1,4 +1,4 @@
-"""Cầu nối print agent ↔ máy in Instax mini Link 3 (Bluetooth Classic, Windows 11).
+"""Cầu nối print agent ↔ máy in Instax mini Link 3 / Link WIDE (Bluetooth, Windows 11).
 
 Dùng thư viện nguồn mở instax-sdk (https://github.com/arahe-dev/instax-sdk, MIT), cài trong một
 virtualenv riêng; print-agent.js chạy script này bằng python của virtualenv đó (INSTAX_PYTHON).
@@ -22,13 +22,21 @@ import os
 import sys
 import threading
 
+from PIL import Image, ImageOps
+
 from instax.client import InstaxPrinter
 from instax.imaging import prepare_jpeg
 from instax.rfcomm import RfcommTransport
 
 
 def make_transport(address):
-    return RfcommTransport(address)
+    # Mặc định Bluetooth Classic: thiết bị "(EDR)" của mini Link 3, "(ANDROID)" của Link WIDE, đều
+    # trên kênh RFCOMM 6. INSTAX_TRANSPORT=ble (địa chỉ thiết bị "(BLE)" / "(IOS)") chậm hơn ~25 lần,
+    # chỉ dùng khi Classic không kết nối được.
+    if os.environ.get("INSTAX_TRANSPORT", "").strip().lower() == "ble":
+        from instax.ble import BleTransport
+        return BleTransport(address)
+    return RfcommTransport(address, int(os.environ.get("INSTAX_CHANNEL") or 6))
 
 
 async def maybe(value):
@@ -79,10 +87,13 @@ class Bridge:
 
     async def print(self, path):
         printer = await self.ensure()
-        with open(path, "rb") as handle:
-            data = handle.read()
         info = printer.info
-        jpeg = prepare_jpeg(data, info.width, info.height, printer.max_jpeg_bytes,
+        with Image.open(path) as source:
+            image = ImageOps.exif_transpose(source)
+        # Tờ dọc (mini 600 × 800) lên máy in khổ ngang (Link WIDE 1260 × 840): xoay cho kín tấm phim.
+        if (image.width > image.height) != (info.width > info.height):
+            image = image.rotate(90, expand=True)
+        jpeg = prepare_jpeg(image, info.width, info.height, printer.max_jpeg_bytes,
                             flip_vertical=printer.profile.flip_vertical)
         outcome = await maybe(printer.print_jpeg(jpeg))
         return {
@@ -144,7 +155,7 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8")
     address = os.environ.get("INSTAX_ADDRESS", "").strip()
     if not address:
-        reply({"id": None, "ok": False, "error": "Thiếu INSTAX_ADDRESS (địa chỉ Bluetooth Classic của máy Instax)."})
+        reply({"id": None, "ok": False, "error": "Thiếu INSTAX_ADDRESS (địa chỉ Bluetooth của máy Instax)."})
         return 2
     asyncio.run(serve(address))
     return 0

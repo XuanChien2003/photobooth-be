@@ -238,6 +238,26 @@ thử trên đúng máy in trước khi nhận khách.
 Khung Instax: Quản trị → Khung ảnh → Thêm mới → **Size Instax** (ảnh 1200 × 1600, dọc 3 : 4). Mỗi tấm in là
 ảnh 600 × 800 (`scripts/instax-bridge.py` thu nhỏ / nén vừa giới hạn của máy in).
 
+#### Máy Instax Link WIDE
+
+Cùng print agent và cùng bridge, nhưng instax-sdk **chưa thử trên Link WIDE** (dùng cấu hình chung: ảnh tối đa
+105 KB, gửi chậm hơn mini Link 3 một chút) — in thử trước khi nhận khách. Các bước 1–4 ở trên giữ nguyên, trừ:
+
+- **Địa chỉ:** `classic-address` chỉ đọc được trên mini Link 3. Link WIDE có hai thiết bị Bluetooth,
+  `INSTAX-<số máy>(IOS)` (BLE) và `INSTAX-<số máy>(ANDROID)` (Classic). Ghép đôi thiết bị Classic ở
+  Cài đặt → Bluetooth và thiết bị → Thêm thiết bị → Bluetooth (điện thoại phải ngắt khỏi máy in), rồi đọc địa chỉ:
+  ```powershell
+  Get-PnpDevice -Class Bluetooth | ? FriendlyName -like 'INSTAX-*' | % { '{0}  {1}' -f $_.FriendlyName, ((Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName DEVPKEY_Bluetooth_DeviceAddress).Data -replace '(..)(?!$)', '$1:') }
+  ```
+  Đối chiếu số máy với app INSTAX (thường mini Link 3 đuôi `(EDR)`, Link WIDE đuôi `(ANDROID)`).
+- **Kiểm tra:** `instax.exe info --address <địa chỉ>` phải in `image 1260x840`. Không kết nối được:
+  `instax.exe rfcomm-scan --address <địa chỉ>` tìm kênh trả lời `instax protocol` (mặc định 6), ghi
+  `INSTAX_CHANNEL=<kênh>` vào `.env`. Classic vẫn không được thì dùng BLE: `instax.exe scan` lấy địa chỉ dòng
+  `(IOS)`, đặt `INSTAX_TRANSPORT=ble` và `INSTAX_ADDRESS=<địa chỉ đó>` (chậm hơn nhiều, có thể 1–2 phút một tấm).
+- **Một máy Instax mỗi print agent** (`INSTAX_ADDRESS`): chuyển sang Link WIDE thì mini Link 3 ngừng nhận lệnh.
+- **Chưa có khung khổ Wide:** tờ Instax dọc 600 × 800 được bridge xoay ngang và in giữa tấm phim Wide
+  (1120 × 840 trên 1260 × 840, hai bên để trắng).
+
 Tùy chọn phục vụ cả frontend đã build: đặt `FRONTEND_DIST=../photobooth-fe/dist` và
 `CLIENT_URL=http://localhost:8080` trong `.env` rồi khởi động lại.
 
