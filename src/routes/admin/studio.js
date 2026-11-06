@@ -115,6 +115,9 @@ studioRouter.delete("/screens/:id", admin, async (req, res) => {
 // Chủ đề = các khung cùng “tên bộ chủ đề” (khách chọn cả bộ để ghép). Thông tin riêng của chủ đề
 // (bật / tắt, thứ tự hiện cho khách, chủ đề chưa có khung) lưu ở Setting studio.themes.
 const themeName = z.string().trim().min(1, "Vui lòng nhập tên chủ đề.").max(100);
+// Chủ đề thuộc một loại phòng: Photobooth (khung 10 × 15) hoặc Polaroid (khung Instax), chọn lúc thêm.
+const themeKind = z.enum(["photobooth", "polaroid"]);
+const kindOfSize = (printSize) => (printSize === "instax" ? "polaroid" : "photobooth");
 const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const sameName = (name) => new RegExp(`^\\s*${escape(name)}\\s*$`);
 const storedThemes = async () =>
@@ -177,14 +180,17 @@ async function listThemes() {
     .map((name) => {
       const group = groups.find((g) => g._id === name);
       const meta = byName.get(name);
+      const sizes = group?.sizes || [];
       return {
         name,
+        // Chủ đề cũ chưa lưu loại phòng: suy ra từ khổ các khung trong chủ đề (chưa có khung: Photobooth).
+        kind: meta?.kind || (sizes.length && sizes.every((size) => kindOfSize(size) === "polaroid") ? "polaroid" : "photobooth"),
         active: meta?.active ?? true,
         order: meta ? meta.index : stored.length + names.indexOf(name),
         frames: group?.frames || 0,
         activeFrames: group?.activeFrames || 0,
         slots: group?.slots || 0,
-        sizes: group?.sizes || [],
+        sizes,
         createdAt: group?.createdAt || meta?.createdAt || null,
         previews: (group?.previews || []).slice(0, 4).map(frameThumbUrl),
       };
@@ -194,26 +200,33 @@ async function listThemes() {
 // Lưu thứ tự + trạng thái của mọi chủ đề đang có, theo thứ tự đã sắp.
 const persist = (themes) =>
   saveThemes(
-    themes.map(({ name, active, createdAt }) => ({ name, active, createdAt: createdAt || new Date() })),
+    themes.map(({ name, kind, active, createdAt }) => ({ name, kind, active, createdAt: createdAt || new Date() })),
   );
 
 studioRouter.get("/themes", admin, async (req, res) => res.json(await listThemes()));
 studioRouter.post("/themes", admin, async (req, res) => {
   const name = themeName.parse(req.body.name);
+  const kind = themeKind.default("photobooth").parse(req.body.kind);
   const themes = await listThemes();
   if (themes.some((t) => t.name.toLocaleLowerCase("vi") === name.toLocaleLowerCase("vi")))
     fail(409, `Đã có chủ đề “${name}”.`);
-  await persist([...themes, { name, active: true, createdAt: new Date() }]);
+  await persist([...themes, { name, kind, active: true, createdAt: new Date() }]);
   res.status(201).json(await listThemes());
 });
-// Đổi tên (đổi luôn tên bộ của mọi khung trong chủ đề) và / hoặc bật / tắt hiển thị với khách.
+// Đổi tên (đổi luôn tên bộ của mọi khung trong chủ đề), bật / tắt hiển thị với khách và / hoặc
+// chuyển chủ đề sang loại phòng khác (chỉ khi chưa có khung khổ của loại cũ).
 studioRouter.put("/themes", admin, async (req, res) => {
   const d = z
-    .object({ name: themeName, newName: themeName.optional(), active: z.boolean().optional() })
+    .object({ name: themeName, newName: themeName.optional(), active: z.boolean().optional(), kind: themeKind.optional() })
     .parse(req.body);
   const themes = await listThemes();
   const theme = themes.find((t) => t.name === d.name);
   if (!theme) fail(404, "Không tìm thấy chủ đề.");
+  if (d.kind && d.kind !== theme.kind) {
+    if (theme.sizes.some((size) => kindOfSize(size) !== d.kind))
+      fail(409, `Chủ đề “${theme.name}” đang có khung ${d.kind === "polaroid" ? "khổ 10 × 15" : "khổ Instax"}: chuyển các khung đó sang chủ đề khác trước.`);
+    theme.kind = d.kind;
+  }
   if (d.newName && d.newName !== d.name) {
     if (themes.some((t) => t !== theme && t.name.toLocaleLowerCase("vi") === d.newName.toLocaleLowerCase("vi")))
       fail(409, `Đã có chủ đề “${d.newName}”. Vui lòng đặt tên khác.`);

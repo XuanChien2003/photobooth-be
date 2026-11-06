@@ -213,6 +213,21 @@ test("themes group frames: rename, hide from customers, order and ungroup withou
     themes = (await admin.delete(`/api/admin/themes/${encodeURIComponent("Dễ thương")}`).expect(200)).body;
     assert.deepEqual(themes.map((t) => t.name), ["Limited", "Basic"]);
     assert.equal(await Frame.countDocuments({ themeName: "" }), 2, "frames stay as single frames");
+    // Chủ đề thuộc loại phòng đã chọn lúc thêm (tab Photobooth / Polaroid), giữ qua đổi tên / thứ tự.
+    themes = (await admin.post("/api/admin/themes").send({ name: "Wide", kind: "polaroid" }).expect(201)).body;
+    assert.deepEqual(themes.map((t) => [t.name, t.kind]), [["Limited", "photobooth"], ["Basic", "photobooth"], ["Wide", "polaroid"]]);
+    themes = (await admin.put("/api/admin/themes").send({ name: "Wide", newName: "Wide 2", active: false }).expect(200)).body;
+    assert.equal(themes.find((t) => t.name === "Wide 2").kind, "polaroid");
+    await admin.post("/api/admin/themes").send({ name: "X", kind: "selfie" }).expect(400);
+    // Chủ đề chưa có khung chuyển được sang loại khác; có khung khổ 10 × 15 thì không chuyển sang Polaroid.
+    themes = (await admin.put("/api/admin/themes").send({ name: "Limited", kind: "polaroid" }).expect(200)).body;
+    assert.equal(themes.find((t) => t.name === "Limited").kind, "polaroid");
+    const refused = await admin.put("/api/admin/themes").send({ name: "Basic", kind: "polaroid" }).expect(409);
+    assert.match(refused.body.message, /khổ 10 × 15/);
+    // Chủ đề cũ (chưa lưu loại) có toàn khung Instax: thuộc Polaroid.
+    await admin.post("/api/admin/frames").send({ name: "W1", themeName: "Instax cũ", printSize: "instax", image: png, slots: slot, active: true }).expect(200);
+    themes = (await admin.get("/api/admin/themes").expect(200)).body;
+    assert.equal(themes.find((t) => t.name === "Instax cũ").kind, "polaroid");
   } finally {
     await Frame.deleteMany({});
     await Setting.updateOne({ key: "studio" }, { $unset: { "value.themes": 1 } });
