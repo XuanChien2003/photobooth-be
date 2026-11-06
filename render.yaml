@@ -1,11 +1,15 @@
 services:
   - type: web
-    name: photo-be
+    name: photobooth-be
     runtime: node
-    plan: free
+    # Starter: 0,5 CPU, 512 MB RAM, không ngủ (gói free ngủ sau 15 phút và chỉ có 0,1 CPU).
+    plan: starter
+    region: singapore
     # Exact versions from package-lock.json, without test-only packages (faster, reproducible).
     buildCommand: npm ci --omit=dev
     startCommand: npm start
+    # Render chỉ chuyển sang bản mới khi bản đó trả lời được (triển khai không gián đoạn).
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
@@ -15,7 +19,15 @@ services:
         generateValue: true
       - key: CLIENT_URL
         sync: false
-      - key: ADMIN_EMAIL
-        value: admin@nxc.local
-      - key: ADMIN_PASSWORD
+      - key: PRINT_AGENT_TOKEN
+        sync: false
+      - key: MEDIA_STORAGE_PROVIDER
+        value: r2
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
         sync: false
