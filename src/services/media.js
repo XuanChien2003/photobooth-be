@@ -111,14 +111,28 @@ export function photoFile(p, size) {
 const LINKED_SIZES = ["thumbnail", "preview", "print", "original"];
 export async function photoLinks(p, now = Date.now()) {
   if (!p || !isR2File(p.file)) return undefined;
-  const window = linkWindow(photoExpiry(p), now);
+  const files = Object.fromEntries(LINKED_SIZES
+    .filter((size) => size !== "print" || p.printFile)
+    .map((size) => [size, photoFile(p, size)]));
+  return mediaLinks(files, photoExpiry(p), "image/jpeg", now);
+}
+
+// Videos and composed photos are retained until the last photo expires, including hidden
+// photos (the cleanup task uses the same rule). A media-only remainder uses its stored expiry.
+export function albumMediaExpiry(b) {
+  if (b.mediaDeleted) return undefined;
+  return b.photos?.length
+    ? new Date(Math.max(...b.photos.map((p) => photoExpiry(p).getTime())))
+    : b.mediaExpiresAt;
+}
+
+export async function mediaLinks(files, expiresAt, contentType, now = Date.now()) {
+  if (!expiresAt || !Object.values(files).some(isR2File)) return undefined;
+  const window = linkWindow(expiresAt, now);
   if (window.fresh <= 0 || window.seconds <= 0) return undefined;
   const links = { until: new Date(window.signedAt + window.seconds * 1000) };
-  for (const size of LINKED_SIZES) {
-    // No print source yet: the page prints from the original (printSource: false).
-    if (size === "print" && !p.printFile) continue;
-    const file = photoFile(p, size);
-    if (isR2File(file)) links[size] = await signLink(file, window, "image/jpeg");
+  for (const [size, file] of Object.entries(files)) {
+    if (isR2File(file)) links[size] = await signLink(file, window, contentType);
   }
   return links;
 }

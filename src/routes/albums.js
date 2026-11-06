@@ -13,6 +13,7 @@ import {
   sendMedia,
   photoExpiry,
   photoFile,
+  albumMediaExpiry,
   MEDIA_TTL_MS,
 } from "../services/media.js";
 import { sendZip } from "../services/zip.js";
@@ -98,23 +99,25 @@ albumsRouter.get("/:token/photos/:photo", async (req, res) => {
 });
 // Video tua nhanh của lượt chụp: xem trong album (hỗ trợ tua) hoặc tải về (?download=1).
 albumsRouter.get("/:token/video", async (req, res) => {
-  const b = await album(req, { code: 1, status: 1, captureEndsAt: 1, video: 1, mediaDeleted: 1 });
+  const b = await album(req, { code: 1, status: 1, captureEndsAt: 1, video: 1, mediaDeleted: 1,
+    "photos._id": 1, mediaExpiresAt: 1 });
   if (!b.video?.file || b.mediaDeleted) fail(404, "Album chưa có video.");
   if (req.query.download === "1")
     res.attachment(`NXC-${b.code}-video.${b.video.mimeType === "video/mp4" ? "mp4" : "webm"}`);
   res.set("Cache-Control", "private, max-age=600");
-  await sendMedia(req, res, b.video.file, b.video.mimeType);
+  await sendMedia(req, res, b.video.file, b.video.mimeType, albumMediaExpiry(b));
 });
 // Ảnh đã ghép khung ở máy chụp: ?size=thumbnail bản xem nhanh, ?download=1 tải về.
 albumsRouter.get("/:token/composite", async (req, res) => {
-  const b = await album(req, { code: 1, status: 1, captureEndsAt: 1, composite: 1, mediaDeleted: 1 });
+  const b = await album(req, { code: 1, status: 1, captureEndsAt: 1, composite: 1, mediaDeleted: 1,
+    "photos._id": 1, mediaExpiresAt: 1 });
   if (!b.composite?.file || b.mediaDeleted) fail(404, "Album chưa có ảnh ghép khung.");
   if (req.query.download === "1") res.attachment(`NXC-${b.code}-anh-ghep.jpg`);
   res.set("Cache-Control", "private, max-age=600");
   const file = req.query.size === "thumbnail" && req.query.download !== "1"
     ? b.composite.thumbnailFile || b.composite.file
     : b.composite.file;
-  await sendMedia(req, res, file, "image/jpeg");
+  await sendMedia(req, res, file, "image/jpeg", albumMediaExpiry(b));
 });
 albumsRouter.get("/:token/download", async (req, res) => {
   const b = await album(req);

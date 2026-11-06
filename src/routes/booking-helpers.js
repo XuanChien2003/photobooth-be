@@ -1,6 +1,6 @@
 import { Booking } from "../models/index.js";
 import { finishCapture, isOverdue } from "../services/capture.js";
-import { photoExpiry, photoLinks } from "../services/media.js";
+import { albumMediaExpiry, mediaLinks, photoExpiry, photoLinks } from "../services/media.js";
 import { fail } from "./validation.js";
 
 export const publicBooking = (b) => ({
@@ -42,6 +42,18 @@ export async function albumBooking(b, now = Date.now()) {
     const links = await photoLinks(byId.get(String(p.id)), now);
     return links ? { ...p, links } : p;
   }));
+  const expiresAt = albumMediaExpiry(b);
+  if (json.video) {
+    const links = await mediaLinks({ original: b.video.file }, expiresAt, b.video.mimeType, now);
+    if (links) json.video.links = links;
+  }
+  if (json.composite) {
+    const links = await mediaLinks({
+      original: b.composite.file,
+      thumbnail: b.composite.thumbnailFile || b.composite.file,
+    }, expiresAt, "image/jpeg", now);
+    if (links) json.composite.links = links;
+  }
   return json;
 }
 // Số tờ 10 × 15 cm vé được in: theo gói lúc cấp mã + tờ mua thêm tại quầy.

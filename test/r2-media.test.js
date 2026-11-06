@@ -237,6 +237,88 @@ test("the album hands out each photo's gallery and editor links, the same URLs t
   assert.equal(saved.photos.length, 1);
 });
 
+test("album videos and composed photos load directly from storage with unchanged fallback bytes", async () => {
+  enableR2();
+  const b = await booking();
+  const video = randomBytes(4096);
+  const jpeg = await sharp({ create: { width: 80, height: 60, channels: 3, background: "#527194" } })
+    .jpeg().toBuffer();
+  const thumbnail = await sharp(jpeg).resize(40).jpeg().toBuffer();
+  await Promise.all([
+    saveMedia("r2:media/shared.mp4", video, "video/mp4"),
+    saveMedia("r2:media/shared.jpg", jpeg, "image/jpeg"),
+    saveMedia("r2:media/shared.thumb.jpg", thumbnail, "image/jpeg"),
+  ]);
+  const early = photoId(new Date(Date.now() - MEDIA_TTL_MS + 60_000));
+  const last = new mongoose.Types.ObjectId();
+  await Booking.updateOne({ _id: b._id }, { $set: {
+    photos: [{ _id: early, file: "legacy-first.jpg" }, { _id: last, file: "legacy-last.jpg" }],
+    mediaExpiresAt: new Date(early.getTimestamp().getTime() + MEDIA_TTL_MS),
+    video: { file: "r2:media/shared.mp4", mimeType: "video/mp4", size: video.length },
+    composite: { file: "r2:media/shared.jpg", thumbnailFile: "r2:media/shared.thumb.jpg", width: 80, height: 60 },
+  } });
+  const base = `/api/albums/${b.accessToken}`;
+  calls = [];
+  for (let attempt = 0; ; attempt++) {
+    const window = Math.floor(Date.now() / 120000);
+    const [{ body }, clip, image, thumb] = await Promise.all([
+      request(app).get(base).expect(200),
+      request(app).get(`${base}/video?direct=1`).expect(302),
+      request(app).get(`${base}/composite?direct=1`).expect(302),
+      request(app).get(`${base}/composite?size=thumbnail&direct=1`).expect(302),
+    ]);
+    if (window !== Math.floor(Date.now() / 120000) && attempt < 2) continue;
+    assert.equal(body.video.links.original, clip.headers.location);
+    assert.equal(body.composite.links.original, image.headers.location);
+    assert.equal(body.composite.links.thumbnail, thumb.headers.location);
+    assert.equal(new URL(clip.headers.location).searchParams.get("response-content-type"), "video/mp4");
+    assert.ok(Date.parse(body.video.links.until) > Date.now() + 60_000,
+      "shared media stays available while a later photo is retained");
+    assert.ok(Date.parse(body.video.links.until) <= last.getTimestamp().getTime() + MEDIA_TTL_MS);
+    assert.deepEqual(calls, [], "album links and redirects do not relay any file through Render");
+    break;
+  }
+  const download = await request(app).get(`${base}/video?download=1&direct=link`).expect(200);
+  assert.match(new URL(download.body.url).searchParams.get("response-content-disposition"), /NXC-.*-video\.mp4/);
+  assert.equal(download.headers["content-disposition"], undefined);
+  assert.deepEqual((await request(app).get(`${base}/video`).expect(200)).body, video);
+  assert.deepEqual((await request(app).get(`${base}/composite`).expect(200)).body, jpeg);
+  assert.deepEqual((await request(app).get(`${base}/composite?size=thumbnail`).expect(200)).body, thumbnail);
+  const range = await request(app).get(`${base}/video?direct=1`).set("Range", "bytes=10-29").expect(206);
+  assert.deepEqual(range.body, video.subarray(10, 30), "older clients can still seek through the proxy");
+  await request(app).head(`${base}/video?direct=1`).expect(200);
+  await request(app).get("/api/albums/wrong-token/video?direct=1").expect(404);
+  await Booking.updateOne({ _id: b._id }, { $set: { mediaDeleted: true } });
+  const hidden = await request(app).get(base).expect(200);
+  assert.equal(hidden.body.video.links, undefined);
+  assert.equal(hidden.body.composite.links, undefined);
+  await request(app).get(`${base}/video?direct=1`).expect(404);
+  await request(app).get(`${base}/composite?direct=1`).expect(404);
+});
+
+test("shared media links are omitted for old storage and photos close to their final expiry", async () => {
+  enableR2();
+  const b = await booking();
+  await Booking.updateOne({ _id: b._id }, { $set: {
+    photos: [{ file: "legacy.jpg" }],
+    video: { file: "legacy.mp4", mimeType: "video/mp4", size: 10 },
+    composite: { file: "legacy-composite.jpg" },
+  } });
+  const base = `/api/albums/${b.accessToken}`;
+  const legacy = await request(app).get(base).expect(200);
+  assert.equal(legacy.body.video.links, undefined);
+  assert.equal(legacy.body.composite.links, undefined);
+  const nearExpiry = photoId(new Date(Date.now() - MEDIA_TTL_MS + 5000));
+  await Booking.updateOne({ _id: b._id }, { $set: {
+    "photos.0._id": nearExpiry,
+    "video.file": "r2:media/shared.mp4",
+    "composite.file": "r2:media/shared.jpg",
+  } });
+  const expiring = await request(app).get(base).expect(200);
+  assert.equal(expiring.body.video.links, undefined);
+  assert.equal(expiring.body.composite.links, undefined);
+});
+
 before(async () => {
   config.secret = "r2-test-secret-only-123456789-not-production";
   config.dnpPrinter = "";
