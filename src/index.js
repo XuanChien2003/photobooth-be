@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
-import os from "node:os";
 import sharp from "sharp";
 import { config } from "./config.js";
+import { imageThreads } from "./services/cpu.js";
 import { app } from "./app.js";
 import { migrateCounterIndexes } from "./services/counter-indexes.js";
 import { startMediaCleanup } from "./services/media.js";
@@ -13,11 +13,11 @@ import { ensureDefaultPackages } from "./services/default-packages.js";
 if (!config.mongo || !config.secret || config.secret.length < 32)
   throw new Error("Thiếu MONGO_URI hoặc JWT_SECRET (ít nhất 32 ký tự).");
 validateMediaStorage();
-// Máy chủ miễn phí chỉ có 512 MB RAM: bộ nhớ đệm của sharp nhỏ hơn mặc định (50 MB, 100 mục).
+// Máy chủ Render (gói Starter) có 512 MB RAM: bộ nhớ đệm của sharp nhỏ hơn mặc định (50 MB, 100 mục).
 sharp.cache({ memory: 32, files: 0, items: 32 });
-// Gói free chỉ có ~0,1 CPU nhưng thấy nhiều lõi: nhiều luồng xử lý ảnh chỉ tranh nhau thời gian
-// CPU ít ỏi (và RAM). Số luồng theo CPU thật được cấp; đặt SHARP_CONCURRENCY để ghi đè.
-sharp.concurrency(Number(process.env.SHARP_CONCURRENCY) || Math.max(1, Math.min(4, os.availableParallelism())));
+// Số luồng xử lý ảnh theo CPU thật được cấp (Starter 0,5 CPU → 1 luồng), không theo số lõi của máy
+// vật lý: nhiều luồng chỉ tranh nhau nửa CPU và tốn RAM. Đặt SHARP_CONCURRENCY để ghi đè.
+sharp.concurrency(Number(process.env.SHARP_CONCURRENCY) || imageThreads());
 try {
   // Mặc định mongoose mở tới 100 kết nối; một máy chủ nhỏ + Atlas miễn phí chỉ cần vài kết nối.
   await mongoose.connect(config.mongo, {
