@@ -113,7 +113,9 @@ studioRouter.delete("/screens/:id", admin, async (req, res) => {
 
 // ─── Thiết lập → Chủ đề ──────────────────────────────────────────────────
 // Chủ đề = các khung cùng “tên bộ chủ đề” (khách chọn cả bộ để ghép). Thông tin riêng của chủ đề
-// (bật / tắt, thứ tự hiện cho khách, chủ đề chưa có khung) lưu ở Setting studio.themes.
+// (bật / tắt, thứ tự hiện cho khách, chủ đề chưa có khung, loại hình chụp) lưu ở Setting studio.themes.
+// kind: chủ đề của phòng Photobooth (khung 10 × 15) hay phòng Polaroid (khung Instax); chủ đề cũ chưa
+// lưu loại thì theo khung trong chủ đề.
 const themeName = z.string().trim().min(1, "Vui lòng nhập tên chủ đề.").max(100);
 // Chủ đề thuộc một loại phòng: Photobooth (khung 10 × 15) hoặc Polaroid (khung Instax), chọn lúc thêm.
 const themeKind = z.enum(["photobooth", "polaroid"]);

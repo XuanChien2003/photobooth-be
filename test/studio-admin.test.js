@@ -187,17 +187,28 @@ test("waiting screens: one general screen plus per-machine screens reach the cat
 });
 
 test("themes group frames: rename, hide from customers, order and ungroup without deleting frames", async () => {
-  const frame = (name, themeName, order) =>
-    admin.post("/api/admin/frames").send({ name, themeName, order, image: png, slots: slot, active: true }).expect(200);
+  const frame = (name, themeName, order, printSize = "full") =>
+    admin.post("/api/admin/frames").send({ name, themeName, order, printSize, image: png, slots: slot, active: true }).expect(200);
   await frame("A1", "Kawaii", 1);
   await frame("A2", "Kawaii", 2);
   await frame("B1", "Basic", 1);
+  await frame("W1", "Wide trắng", 1, "instax");
   try {
     await staff.get("/api/admin/themes").expect(403);
     let themes = (await admin.get("/api/admin/themes").expect(200)).body;
-    assert.deepEqual(themes.map((t) => [t.name, t.frames, t.slots]).sort(), [["Basic", 1, 1], ["Kawaii", 2, 2]]);
+    assert.deepEqual(themes.map((t) => [t.name, t.frames, t.slots, t.kind]).sort(),
+      [["Basic", 1, 1, "photobooth"], ["Kawaii", 2, 2, "photobooth"], ["Wide trắng", 1, 1, "polaroid"]],
+      "a theme without a stored kind follows its frames: Instax frames make it a Polaroid theme");
+    await admin.post("/api/admin/themes").send({ name: "Sai loại", kind: "dnp" }).expect(400);
+    themes = (await admin.post("/api/admin/themes").send({ name: "Wide hồng", kind: "polaroid" }).expect(201)).body;
+    assert.deepEqual([themes.find((t) => t.name === "Wide hồng").kind, themes.find((t) => t.name === "Kawaii").kind],
+      ["polaroid", "photobooth"]);
+    await admin.delete(`/api/admin/themes/${encodeURIComponent("Wide hồng")}`).expect(200);
+    await admin.delete(`/api/admin/themes/${encodeURIComponent("Wide trắng")}`).expect(200);
+    await Frame.deleteOne({ name: "W1" });
     themes = (await admin.post("/api/admin/themes").send({ name: "Limited" }).expect(201)).body;
     assert.equal(themes.find((t) => t.name === "Limited").frames, 0);
+    assert.equal(themes.find((t) => t.name === "Limited").kind, "photobooth");
     await admin.post("/api/admin/themes").send({ name: "kawaii" }).expect(409);
     await admin.put("/api/admin/themes").send({ name: "Kawaii", newName: "Basic" }).expect(409);
     themes = (await admin.put("/api/admin/themes").send({ name: "Kawaii", newName: "Dễ thương" }).expect(200)).body;
@@ -423,11 +434,18 @@ test("packages print at least two pieces: one strip sheet cut in half, or two fu
   await admin.put(`/api/admin/packages/${pack._id}`).send({ ...base, printSize: "full", prints: 2 }).expect(200);
 });
 
-test("Instax: two prints minimum, its own extra price, and the kiosk sells it only while the printer is ready", async () => {
-  const base = { name: "Gói Instax", description: "", price: 120000, duration: 10, active: true, printSize: "instax" };
-  const one = await admin.put(`/api/admin/packages/${pack._id}`).send({ ...base, prints: 1 }).expect(400);
-  assert.match(one.body.message, /khổ Instax kèm ít nhất 2 tấm/);
-  await admin.put(`/api/admin/packages/${pack._id}`).send({ ...base, prints: 2 }).expect(200);
+test("Instax: one print, unlimited shots, its own extra price, and the kiosk sells it only while the printer is ready", async () => {
+  const base = { name: "Gói Instax", description: "", price: 120000, duration: 5, active: true, printSize: "instax" };
+  // Layout Polaroid luôn in 1 tấm, không giới hạn số lần chụp: số gửi lên (hay không gửi) đều bỏ qua.
+  const saved = (await admin.put(`/api/admin/packages/${pack._id}`).send({ ...base, prints: 4, shots: 30 }).expect(200)).body;
+  assert.deepEqual([saved.prints, saved.shots], [1, 0]);
+  await admin.put(`/api/admin/packages/${pack._id}`).send(base).expect(200);
+  // Gói photobooth vẫn cần ít nhất 1 lần chụp.
+  const noShots = await admin.put(`/api/admin/packages/${pack._id}`)
+    .send({ ...base, printSize: "full", prints: 2, shots: 0 }).expect(400);
+  assert.match(noShots.body.message, /Số lần chụp: phải từ 1 trở lên/);
+  // Gói cũ còn ghi 2 tấm, 10 lần chụp: lượt Polaroid vẫn in 1 tấm, chụp không giới hạn.
+  await Package.updateOne({ _id: pack._id }, { $set: { prints: 2, shots: 10 } });
   await admin.put(`/api/admin/rooms/${room._id}`).send({
     name: "Máy 1", description: "", branch: "Bắc Giang", kind: "polaroid", paymentTest: false, active: true,
   }).expect(200);
@@ -441,9 +459,12 @@ test("Instax: two prints minimum, its own extra price, and the kiosk sells it on
     .set("Authorization", `Bearer ${config.printAgentToken}`).send(body);
   try {
     await request(app).post("/api/print-agent/status").send({ branch: "Bắc Giang" }).expect(403);
-    await agent({ branch: "Bắc Giang", instax: { connected: true, film: 1, battery: 80 } }).expect(200);
+    await agent({ branch: "Bắc Giang", instax: { connected: true, film: 0, battery: 80 } }).expect(200);
     assert.deepEqual({ ...(await instax()), at: undefined },
-      { ready: false, film: 1, battery: 80, charging: false, at: undefined, message: "Máy Instax chỉ còn 1 tấm phim." });
+      { ready: false, film: 0, battery: 80, charging: false, at: undefined, message: "Máy Instax hết phim." });
+    // Mỗi layout in 1 tấm: còn 1 tấm phim vẫn sẵn sàng.
+    await agent({ branch: "Bắc Giang", instax: { connected: true, film: 1, battery: 80 } }).expect(200);
+    assert.equal((await instax()).ready, true);
     await agent({ branch: "Bắc Giang", instax: { connected: false, message: "Không kết nối được máy Instax" } }).expect(200);
     assert.equal((await instax()).message, "Không kết nối được máy Instax");
     await agent({ branch: "Bắc Giang", instax: { connected: true, film: 8, battery: 60, charging: true } }).expect(200);
@@ -475,7 +496,8 @@ test("Instax: two prints minimum, its own extra price, and the kiosk sells it on
   assert.equal(replay.booking._id, started.booking._id);
   let stored = await Booking.findById(started.booking._id).lean();
   assert.deepEqual([stored.printSize, stored.prints, stored.total, stored.paid, stored.source, stored.status],
-    ["instax", 2, 120000, false, "polaroid", "checked_in"]);
+    ["instax", 1, 120000, false, "polaroid", "checked_in"]);
+  assert.equal(stored.shots, undefined);
   // Không bán gói Instax bằng tiền mặt ở máy; nhân viên ghi nhận đã thu ở quầy.
   await request(app).post("/api/kiosk/sale").send({ ...layout, requestKey: randomUUID(), bills: [{ amount: 200000 }] }).expect(403);
   const collected = (await staff.patch(`/api/admin/bookings/${stored._id}`).send({ collected: "transfer" }).expect(200)).body;

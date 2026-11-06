@@ -364,11 +364,11 @@ export const openapi = {
           description: { type: "string", example: "5 phút, 1 tờ in" },
           price: int("Giá (VND)", { example: 60000 }),
           duration: int("Thời gian chụp (phút, 1–30)", { example: 5 }),
-          shots: int("Số ảnh bắt buộc chụp (1–40)", { example: 12 }),
+          shots: int("Số lần chụp tối đa (1–40); layout Polaroid (instax) luôn 0 = không giới hạn", { example: 12 }),
           countdownSeconds: int("Giây đếm ngược trước mỗi ảnh (1–30)", { example: 10 }),
           selectCount: int("Số ảnh khách chọn để ghép khung trên máy chụp (1–12)", { example: 4 }),
           printSize: enumOf(["full", "strip", "instax"]),
-          prints: int("Số tờ in kèm gói (0–20)", { example: 1 }),
+          prints: int("Số tờ in kèm gói (0–20); layout Polaroid (instax) luôn 1 tấm", { example: 1 }),
           branches: { type: "array", items: { type: "string" }, description: "Chi nhánh áp dụng; để trống = mọi chi nhánh" },
           active: { type: "boolean", example: true },
         },
@@ -1742,7 +1742,7 @@ export const openapi = {
     "/api/admin/themes": {
       get: {
         tags: ["Danh mục & cài đặt"],
-        summary: "Chủ đề (bộ khung): số khung, số ô ảnh, trạng thái, thứ tự",
+        summary: "Chủ đề (bộ khung): loại hình chụp (photobooth / polaroid), số khung, số ô ảnh, trạng thái, thứ tự",
         description: adminOnly,
         security: loggedIn,
         responses: { ...ok("Danh sách", { type: "array", items: { type: "object" } }), ...errors(401, 403) },
@@ -1752,7 +1752,10 @@ export const openapi = {
         summary: "Thêm chủ đề (chưa có khung)",
         description: adminOnly,
         security: loggedIn,
-        requestBody: body({ name: str("Tên chủ đề") }, ["name"]),
+        requestBody: body({
+          name: str("Tên chủ đề"),
+          kind: { type: "string", enum: ["photobooth", "polaroid"], description: "Chủ đề của phòng Photobooth (mặc định) hay phòng Polaroid" },
+        }, ["name"]),
         responses: { ...ok("Danh sách", { type: "array", items: { type: "object" } }, 201), ...errors(400, 401, 403, 409) },
       },
       put: {
