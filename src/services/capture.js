@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import sharp from "sharp";
 import { config } from "../config.js";
 import Booking from "../models/Booking.js";
-import { saveMedia, deleteMedia, readMedia, MEDIA_TTL_MS } from "./media.js";
+import { saveMedia, deleteMedia, readMedia, photoExpiry, MEDIA_TTL_MS } from "./media.js";
 import mongoose from "mongoose";
 import { mediaReference } from "./r2.js";
 import { cleanJpegMetadata } from "./jpeg-metadata.js";
@@ -110,6 +110,31 @@ const printSourceFromFile = async (buffer, mirrored) =>
 // never the media object whose encodePrint closure holds the full decoded camera pixels.
 const reloadPrintSource = (file, mirrored) => async () =>
   printSourceFromFile(await readMedia(file), mirrored);
+
+// Waiting print sources live only in memory: a restart (every deploy, or a server that ran out of
+// RAM) drops them. At startup, queue one again for every photo still in its storage window that
+// has none; the album prints from the camera original meanwhile.
+export async function resumePrintSources({ limit = 300, now = Date.now() } = {}) {
+  const bookings = await Booking.find({
+    // A ticket is bought at most a couple of hours before the shoot; photos last MEDIA_TTL_MS.
+    createdAt: { $gt: new Date(now - MEDIA_TTL_MS - 3 * 3600_000) },
+    mediaDeleted: { $ne: true },
+    photos: { $elemMatch: { kind: "original", deleted: { $ne: true }, printFile: null } },
+  }).select("photos._id photos.kind photos.deleted photos.file photos.printFile photos.mirrored").lean();
+  let queued = 0;
+  for (const b of bookings) for (const p of b.photos) {
+    if (queued >= limit) return queued;
+    if (p.kind !== "original" || p.deleted || p.printFile || !p.file || photoExpiry(p) <= now) continue;
+    if (schedulePrintSource({
+      bookingId: b._id,
+      photoId: p._id,
+      printFile: mediaReference(crypto.randomUUID() + ".print.jpg"),
+      encode: null,
+      reload: reloadPrintSource(p.file, Boolean(p.mirrored)),
+    })) queued++;
+  }
+  return queued;
+}
 
 // The booth already put the camera original in storage (see direct-upload.js): check its header
 // there, take preview and thumbnail from the booth's own preview, and read the 15 MB original

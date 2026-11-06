@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
 import sharp from "sharp";
 import { config } from "./config.js";
-import { imageThreads } from "./services/cpu.js";
+import { budget, describeBudget } from "./services/capacity.js";
 import { app } from "./app.js";
 import { migrateCounterIndexes } from "./services/counter-indexes.js";
 import { startMediaCleanup } from "./services/media.js";
@@ -13,11 +13,12 @@ import { ensureDefaultPackages } from "./services/default-packages.js";
 if (!config.mongo || !config.secret || config.secret.length < 32)
   throw new Error("Thiếu MONGO_URI hoặc JWT_SECRET (ít nhất 32 ký tự).");
 validateMediaStorage();
-// Máy chủ Render (gói Starter) có 512 MB RAM: bộ nhớ đệm của sharp nhỏ hơn mặc định (50 MB, 100 mục).
-sharp.cache({ memory: 32, files: 0, items: 32 });
-// Số luồng xử lý ảnh theo CPU thật được cấp (Starter 0,5 CPU → 1 luồng), không theo số lõi của máy
-// vật lý: nhiều luồng chỉ tranh nhau nửa CPU và tốn RAM. Đặt SHARP_CONCURRENCY để ghi đè.
-sharp.concurrency(Number(process.env.SHARP_CONCURRENCY) || imageThreads());
+// Xử lý ảnh theo CPU và RAM thật Render cấp (services/capacity.js), không theo máy vật lý: bộ nhớ
+// đệm của sharp (Starter 512 MB → 16 MB, Standard 2 GB → 64 MB) và số luồng (1 CPU → 1 luồng).
+// Đặt SHARP_CONCURRENCY để ghi đè số luồng.
+sharp.cache({ memory: budget.sharpCacheMB, files: 0, items: 64 });
+sharp.concurrency(Number(process.env.SHARP_CONCURRENCY) || budget.threads);
+console.log(`Máy chủ: ${describeBudget()}.`);
 try {
   // Mặc định mongoose mở tới 100 kết nối; một máy chủ nhỏ + Atlas miễn phí chỉ cần vài kết nối.
   await mongoose.connect(config.mongo, {
@@ -49,8 +50,16 @@ try {
   server.keepAliveTimeout = 65_000;
   server.headersTimeout = 66_000;
   startMediaCleanup();
-  const { startSessionSweeper } = await import("./services/capture.js");
+  const { startSessionSweeper, resumePrintSources } = await import("./services/capture.js");
   startSessionSweeper();
+  // Nguồn in đang chờ của máy chủ trước (triển khai mới, hết RAM) đã mất: xếp lại sau 1 phút, khi
+  // máy chủ cũ đã nghỉ hẳn và máy chụp đã gửi xong những ảnh dồn lại.
+  setTimeout(() => {
+    resumePrintSources().then(
+      (count) => count && console.log(`Tạo lại nguồn in cho ${count} ảnh.`),
+      (error) => console.error("Xếp lại nguồn in lỗi:", error.message),
+    );
+  }, 60_000).unref();
   for (const signal of ["SIGINT", "SIGTERM"])
     process.on(signal, () =>
       server.close(async () => {

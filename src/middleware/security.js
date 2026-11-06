@@ -4,6 +4,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import { config } from "../config.js";
 import { apiLimit } from "./rate-limits.js";
+import { shedLargeBodies } from "../services/capacity.js";
 
 export function configureSecurity(app) {
   app.set("trust proxy", 1);
@@ -53,13 +54,16 @@ export function configureSecurity(app) {
   });
   // Giới hạn tần suất trước khi đọc body: yêu cầu bị chặn không tốn công tải và phân tích body.
   app.use("/api", apiLimit);
+  // RAM gần đầy: từ chối body lớn (ảnh / video gửi cả tệp) trước khi đọc nó, thay vì để máy chủ bị
+  // tắt vì hết RAM (services/capacity.js).
+  app.use("/api", shedLargeBodies());
   // inflate: false — không máy nào gửi body nén; không giải nén thì cũng không dính lỗi giải nén
   // của body-parser (GHSA-27r3-jxmh-p828).
   app.use("/api/kiosk/photo", express.json({ limit: "64mb", inflate: false }));
   app.use("/api/albums", express.json({ limit: "64mb", inflate: false }));
   // Body JSON thường dưới 1 MB. Quản trị gửi ảnh khung / màn hình chờ / QR dạng base64 (tới 16 MB):
   // body đó chỉ được đọc sau khi đã kiểm tra đăng nhập (routes/admin/index.js), để yêu cầu chưa đăng
-  // nhập không bắt máy chủ (512 MB RAM) đọc hàng chục MB.
+  // nhập không bắt máy chủ đọc hàng chục MB.
   const json = express.json({ limit: "1mb", inflate: false });
   app.use((req, res, next) => (ADMIN_AFTER_LOGIN.test(req.path) ? next() : json(req, res, next)));
   app.use(cookieParser());

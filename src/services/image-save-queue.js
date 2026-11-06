@@ -1,9 +1,11 @@
-// Bound large image processing/writes across all booths and phone imports on
-// the existing small server. Each booth can overlap uploads without running
-// six full-resolution decoders/writes at once.
+import { budget } from "./capacity.js";
+
+// Bound large image processing/writes across all booths and phone imports. How many run at once
+// follows the RAM the server really has (capacity.js: 1 on 512 MB, 3 on 2 GB), so booths can
+// overlap uploads without running more full-resolution decoders than the memory holds.
 const waiting = [];
 let active = 0;
-const MAX_SAVES = 3;
+const MAX_SAVES = budget.saves;
 
 // True while any photo is being saved or waits to be: background work yields to it.
 export const isSaveQueueBusy = () => active > 0 || waiting.length > 0;

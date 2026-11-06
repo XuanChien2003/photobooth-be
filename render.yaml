@@ -2,8 +2,9 @@ services:
   - type: web
     name: photobooth-be
     runtime: node
-    # Starter: 0,5 CPU, 512 MB RAM, không ngủ (gói free ngủ sau 15 phút và chỉ có 0,1 CPU).
-    plan: starter
+    # Standard: 1 CPU, 2 GB RAM, không ngủ. Gói Starter (512 MB) hết RAM khi vài máy chụp cùng gửi
+    # ảnh 26 MP; máy chủ tự chỉnh số ảnh xử lý cùng lúc theo RAM được cấp (src/services/capacity.js).
+    plan: standard
     region: singapore
     # Exact versions from package-lock.json, without test-only packages (faster, reproducible).
     buildCommand: npm ci --omit=dev
@@ -13,6 +14,10 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Bộ cấp phát glibc mở nhiều vùng nhớ cho các luồng xử lý ảnh (sharp) và không trả RAM lại:
+      # giới hạn 2 vùng giữ RAM ổn định khi chạy lâu (khuyến nghị của sharp / Node trên Linux).
+      - key: MALLOC_ARENA_MAX
+        value: "2"
       - key: MONGO_URI
         sync: false
       - key: JWT_SECRET

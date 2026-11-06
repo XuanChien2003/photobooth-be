@@ -690,10 +690,16 @@ test("a room is deleted for good only after it was stopped; staff cannot delete 
 });
 
 test("request bodies: 1 MB unless signed in to admin; compressed bodies are refused", async () => {
-  await request(app).post("/api/auth/login")
-    .send({ email: "a@b.vn", password: "x".repeat(1_200_000) }).expect(413);
+  // Máy chủ trả lời mà không đọc hết body: tùy lúc phía gửi nhận được mã trả lời hoặc thấy kết nối bị
+  // đóng khi còn đang gửi — cả hai đều là body không được đọc.
+  const refusedBody = (req) => req.then((res) => res.status, (error) => error.code);
+  const unread = (status) => [status, "ECONNRESET", "EPIPE"];
+  const tooLarge = await refusedBody(request(app).post("/api/auth/login")
+    .send({ email: "a@b.vn", password: "x".repeat(1_200_000) }));
+  assert.ok(unread(413).includes(tooLarge), String(tooLarge));
   // Chưa đăng nhập: body lớn gửi tới quản trị không được đọc, chỉ báo cần đăng nhập.
-  await request(app).put("/api/admin/settings/kiosk").send({ idleImage: "x".repeat(2_000_000) }).expect(401);
+  const signedOut = await refusedBody(request(app).put("/api/admin/settings/kiosk").send({ idleImage: "x".repeat(2_000_000) }));
+  assert.ok(unread(401).includes(signedOut), String(signedOut));
   // Đã đăng nhập: quản trị gửi được ảnh base64 vài MB (dữ liệu sai nên 400, không phải 413).
   const signedIn = await admin.put("/api/admin/settings/kiosk").send({ idleImage: "x".repeat(2_000_000) });
   assert.equal(signedIn.status, 400, JSON.stringify(signedIn.body));

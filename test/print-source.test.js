@@ -9,7 +9,7 @@ import sharp from "sharp";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { config } from "../src/config.js";
 import Booking from "../src/models/Booking.js";
-import { appendCapture, prepareImageTasks } from "../src/services/capture.js";
+import { appendCapture, prepareImageTasks, resumePrintSources } from "../src/services/capture.js";
 import { readMedia } from "../src/services/media.js";
 import { saveImageTask } from "../src/services/image-save-queue.js";
 import { schedulePrintSource, whenPrintSourcesIdle } from "../src/services/print-source.js";
@@ -154,4 +154,45 @@ test("a photo removed meanwhile leaves no orphan file, and a failing job leaves 
   assert.equal(await files(), before, "nothing left behind");
   assert.equal((await Booking.findById(b._id)).photos.length, 1, "the photo itself is untouched");
   assert.deepEqual((await names()).filter((n) => /orphan-|broken-/.test(n)), []);
+});
+
+test("after a restart every photo still without a print source gets one again, each only once", async () => {
+  const b = await booking();
+  const source = await photo(600, 400);
+  for (const key of ["restart-a", "restart-b", "restart-c"])
+    await appendCapture(b._id, source, { imported: true, clientKey: key });
+  await whenPrintSourcesIdle();
+  // A restart lost the queue: photo a and b never got their print source, c did; b was deleted.
+  const made = (await Booking.findById(b._id)).photos;
+  await Booking.updateOne({ _id: b._id }, {
+    $unset: { "photos.0.printFile": 1, "photos.1.printFile": 1 },
+    $set: { "photos.1.deleted": true },
+  });
+  const before = await files();
+  // Called twice at once (or while a job for the photo is still queued): queued only once.
+  const counts = await Promise.all([resumePrintSources(), resumePrintSources()]);
+  assert.equal(counts[0] + counts[1], 1);
+  await whenPrintSourcesIdle();
+  const after = (await Booking.findById(b._id)).photos;
+  assert.match(after[0].printFile, /\.print\.jpg$/);
+  assert.notEqual(after[0].printFile, made[0].printFile);
+  assert.equal(after[1].printFile, undefined, "a deleted photo is skipped");
+  assert.equal(after[2].printFile, made[2].printFile, "a photo with a print source is left alone");
+  assert.equal(await files(), before + 1);
+  assert.equal(await resumePrintSources(), 0, "nothing left to do");
+});
+
+test("a print source made elsewhere meanwhile (old server during a deploy) is kept, the new copy removed", async () => {
+  const b = await booking();
+  const saved = await appendCapture(b._id, await photo(600, 400), { imported: true, clientKey: "made-elsewhere" });
+  await whenPrintSourcesIdle();
+  const kept = (await Booking.findById(b._id)).photos[0].printFile;
+  const before = await files();
+  schedulePrintSource({
+    bookingId: b._id, photoId: saved.photos[0]._id, printFile: `twice-${randomUUID()}.print.jpg`,
+    encode: null, reload: async () => photo(600, 400),
+  });
+  await whenPrintSourcesIdle();
+  assert.equal((await Booking.findById(b._id)).photos[0].printFile, kept);
+  assert.equal(await files(), before, "the second copy is deleted again");
 });

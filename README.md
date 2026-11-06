@@ -121,6 +121,16 @@ backend chỉ nhận ảnh xem trước nhỏ và đọc 128 KB đầu của ả
 (đúng loại MP4 / WebM, đúng kích thước, hết hạn 15 phút), tải lên rồi `POST /api/kiosk/video/commit`; backend chỉ
 hỏi kích thước tệp (HEAD) rồi gắn vào album, không giữ video trong bộ nhớ. Kho MongoDB, trang chưa được CORS cho
 `PUT`, hoặc tệp trên kho không dùng được (422): máy chụp gửi qua `POST /api/kiosk/video` như trước.
+
+**Sức chứa máy chủ** (`src/services/capacity.js`): lúc khởi động backend đọc CPU và RAM thật Render cấp
+(cgroup) và in ra log, vd. `Máy chủ: 1 CPU, 2048 MB RAM → xử lý 3 ảnh cùng lúc, 1 luồng sharp, giữ sẵn 4 ảnh
+chờ tạo nguồn in`. Gói Starter (512 MB) chỉ xử lý 1 ảnh một lúc và không giữ điểm ảnh; ngày 6/11/2026 gói
+này hết RAM và bị Render tắt giữa ca (ảnh dồn lại trên máy chụp mấy phút), nên tiệm dùng **Standard
+(1 CPU, 2 GB)**. RAM vượt 70%: việc nền (tạo nguồn in 3000 px) chờ; vượt 85%: body lớn hơn 8 MB (ảnh / video
+gửi cả tệp qua máy chủ) bị trả `503` kèm `Retry-After` — máy chụp giữ ảnh trên máy và tự gửi lại sau vài giây,
+thay vì máy chủ bị tắt và mất mọi yêu cầu đang chạy. Nguồn in đang chờ chỉ nằm trong bộ nhớ: 1 phút sau khi
+khởi động (triển khai mới, hoặc sau sự cố), backend xếp lại cho mọi ảnh còn hạn chưa có nguồn in.
+Trên Render đặt thêm `MALLOC_ARENA_MAX=2` (render.yaml đã có) để RAM không phình dần khi chạy lâu.
 "Tải tất cả ảnh (ZIP)" ở Đơn hàng là ZIP không nén, ghi dần từng ảnh: mã kiểm tra CRC-32 dùng hàm có sẵn của
 Node (`zlib.crc32`, nhanh hơn vòng lặp JavaScript ~8 lần, bớt khoảng 1 giây CPU mỗi ảnh 15 MB trên
 gói free), ảnh kế tiếp được tải từ R2 trong lúc ảnh này đang gửi cho khách (giữ tối đa 2 ảnh trong
