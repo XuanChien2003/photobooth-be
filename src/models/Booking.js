@@ -72,6 +72,12 @@ const bookingSchema = new Schema(
         mirrored: Boolean,
         // Lets the uploader reuse its local JPEG only when no pixel conversion occurred.
         sourcePreserved: Boolean,
+        // The booth sends its 1600 px preview first so the album shows the photo within seconds;
+        // the camera original follows (POST /api/albums/:token/photos/original). Meanwhile `file`
+        // is that preview (already flipped like the screen, hence mirrored = false) and
+        // originalMirrored is how the coming original must be flipped.
+        originalPending: Boolean,
+        originalMirrored: Boolean,
       },
     ],
     video: { file: String, mimeType: String, size: Number },

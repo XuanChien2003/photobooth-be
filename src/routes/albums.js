@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 import { z } from "zod";
 import { mediaReference } from "../services/r2.js";
 import { Booking, PrintJob } from "../models/index.js";
-import { appendCapture } from "../services/capture.js";
+import { appendCapture, attachOriginal } from "../services/capture.js";
 import { timed } from "../services/image-save-queue.js";
 import {
   deleteMedia,
@@ -325,7 +325,30 @@ albumsRouter.post("/:token/photos", photoBody, async (req, res) => {
     b._id,
     d.buffer,
     { clientKey: d.clientKey, originalName: d.name, imported: true, mirrored: d.mirrored, precheck: b,
-      preview: d.preview, storedOriginal: storedOriginal(b._id, d) },
+      preview: d.preview, previewOnly: Boolean(d.later), storedOriginal: storedOriginal(b._id, d) },
   ));
   res.status(201).json(await albumBooking(saved));
+});
+// Ảnh xem trước tới trước, ảnh gốc tới sau: máy chụp gửi ảnh gốc của máy ảnh cho ảnh album đã có.
+// 1) Xin URL tải thẳng lên kho R2 cho đúng ảnh đó (ảnh đã có ảnh gốc: { saved: true }; kho MongoDB: 404,
+// máy chụp gửi qua máy chủ); ảnh không còn trong album: 410.
+albumsRouter.post("/:token/photos/original-url", async (req, res) => {
+  const d = directUploadRequest().parse(req.body);
+  const b = await album(req, { status: 1, captureEndsAt: 1, photos: { $elemMatch: { clientKey: d.clientKey } } });
+  const photo = b.photos?.[0];
+  if (!photo || photo.deleted) fail(410, "Ảnh không còn trong album.");
+  if (!photo.originalPending) return res.json({ saved: true });
+  if (!directUploadsEnabled()) fail(404, "Kho ảnh chưa hỗ trợ tải thẳng.");
+  res.json({ upload: await createDirectUpload(b._id, d.clientKey, d.size) });
+});
+// 2) Gắn ảnh gốc: JSON { clientKey, stored } (đã tải thẳng lên kho) hoặc chính tệp JPEG kèm X-Photo-Key.
+albumsRouter.post("/:token/photos/original", photoBody, async (req, res) => {
+  const b = await album(req, { status: 1, captureEndsAt: 1 });
+  const raw = Buffer.isBuffer(req.body);
+  const clientKey = z.string().min(8).max(160).parse(raw ? req.get("X-Photo-Key") : req.body?.clientKey);
+  if (raw && !req.body.length) fail(400, "Ảnh không có dữ liệu.");
+  const source = raw
+    ? { buffer: req.body }
+    : { storedOriginal: storedOriginal(b._id, { clientKey, stored: z.string().max(200).parse(req.body?.stored) }) };
+  res.json({ attached: await attachOriginal(b._id, clientKey, source) });
 });

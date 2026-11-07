@@ -119,12 +119,12 @@ export async function resumePrintSources({ limit = 300, now = Date.now() } = {})
     // A ticket is bought at most a couple of hours before the shoot; photos last MEDIA_TTL_MS.
     createdAt: { $gt: new Date(now - MEDIA_TTL_MS - 3 * 3600_000) },
     mediaDeleted: { $ne: true },
-    photos: { $elemMatch: { kind: "original", deleted: { $ne: true }, printFile: null } },
-  }).select("photos._id photos.kind photos.deleted photos.file photos.printFile photos.mirrored").lean();
+    photos: { $elemMatch: { kind: "original", deleted: { $ne: true }, printFile: null, originalPending: { $ne: true } } },
+  }).select("photos._id photos.kind photos.deleted photos.file photos.printFile photos.mirrored photos.originalPending").lean();
   let queued = 0;
   for (const b of bookings) for (const p of b.photos) {
     if (queued >= limit) return queued;
-    if (p.kind !== "original" || p.deleted || p.printFile || !p.file || photoExpiry(p) <= now) continue;
+    if (p.kind !== "original" || p.deleted || p.printFile || p.originalPending || !p.file || photoExpiry(p) <= now) continue;
     if (schedulePrintSource({
       bookingId: b._id,
       photoId: p._id,
@@ -157,11 +157,81 @@ async function storedImageTasks(file, mirrored, boothPreview) {
   const { preview, thumbnail, encodePrint, metadata } = prepareImageTasks(await fromStorage(), mirrored);
   return { preview, thumbnail, encodePrint, metadata };
 }
+// Preview first: the booth's own upright 1600 px JPEG becomes the album photo right away (and its
+// thumbnail); the camera original is attached later by attachOriginal.
+async function previewOnlyTasks(preview) {
+  let meta;
+  try {
+    meta = await sharp(preview).metadata();
+  } catch {
+    throw captureError(400, "Ảnh xem trước không hợp lệ.");
+  }
+  const long = Math.max(meta.width || 0, meta.height || 0);
+  if (meta.format !== "jpeg" || !["srgb", "b-w"].includes(meta.space) ||
+    (meta.orientation && meta.orientation !== 1) || long < THUMBNAIL_EDGE || long > 2048)
+    throw captureError(400, "Ảnh xem trước không hợp lệ.");
+  return {
+    preview: Promise.resolve(preview),
+    thumbnail: sharp(preview).resize(downscale(THUMBNAIL_EDGE)).jpeg({ quality: 78 }).toBuffer(),
+    metadata: Promise.resolve(meta),
+  };
+}
+
+// The camera original for a photo the album already shows from its preview (preview first,
+// original later). storedOriginal: the booth uploaded it straight to storage; buffer: sent
+// through the server. Returns false when the photo already has its original (a retry).
+export async function attachOriginal(bookingId, clientKey, { storedOriginal, buffer } = {}) {
+  const b = await Booking.findById(bookingId).select({ photos: { $elemMatch: { clientKey } } });
+  const photo = b?.photos?.[0];
+  if (!photo || photo.deleted) throw captureError(410, "Ảnh không còn trong album.");
+  if (!photo.originalPending) return false;
+  let file = storedOriginal, meta;
+  if (storedOriginal) {
+    ({ meta } = await inspectStoredOriginal(storedOriginal));
+  } else {
+    const input = sharp(buffer, { limitInputPixels: 100_000_000 });
+    try {
+      meta = await input.metadata();
+    } catch {
+      throw captureError(400, "Ảnh không hợp lệ. Hỗ trợ JPEG, PNG, WebP.");
+    }
+    file = mediaReference(crypto.randomUUID() + ".jpg");
+    await saveImageTask(async () => {
+      const bytes = preservesSource(meta)
+        ? await cleanJpegMetadata(buffer, meta.orientation)
+        : await input.clone().rotate().jpeg({ quality: 100, chromaSubsampling: "4:4:4" }).toBuffer();
+      await saveMedia(file, bytes, "image/jpeg");
+    });
+  }
+  const mirrored = Boolean(photo.originalMirrored);
+  const { matchedCount } = await Booking.updateOne(
+    { _id: bookingId, photos: { $elemMatch: { clientKey, originalPending: true, deleted: { $ne: true } } } },
+    {
+      $set: { "photos.$.file": file, "photos.$.mirrored": mirrored, "photos.$.sourcePreserved": preservesSource(meta) },
+      $unset: { "photos.$.originalPending": 1, "photos.$.originalMirrored": 1 },
+    },
+  );
+  if (!matchedCount) {
+    // Attached meanwhile by a retry, or the photo was removed: keep nothing of this attempt.
+    if (!storedOriginal) await deleteMedia([file]).catch(() => {});
+    return false;
+  }
+  schedulePrintSource({
+    bookingId: b._id,
+    photoId: photo._id,
+    printFile: mediaReference(crypto.randomUUID() + ".print.jpg"),
+    encode: null,
+    reload: reloadPrintSource(file, mirrored),
+  });
+  return true;
+}
+
 const uploads = new Map();
 export function appendCapture(
   bookingId,
   buffer,
-  { clientKey, originalName = "photo.jpg", imported = false, mirrored = false, precheck, preview, storedOriginal } = {},
+  { clientKey, originalName = "photo.jpg", imported = false, mirrored = false, precheck, preview, storedOriginal,
+    previewOnly = false } = {},
 ) {
   const key = clientKey && `${bookingId}:${clientKey}`;
   if (key && uploads.has(key)) return uploads.get(key);
@@ -185,11 +255,14 @@ export function appendCapture(
           b.captureEndsAt <= new Date()
     )
       throw captureError(409, "Phiên chụp đã kết thúc.");
-    const file = storedOriginal || mediaReference(crypto.randomUUID() + ".jpg"),
-      thumbnailFile = mediaReference(crypto.randomUUID() + ".thumb.jpg"),
-      previewFile = mediaReference(crypto.randomUUID() + ".preview.jpg");
+    const thumbnailFile = mediaReference(crypto.randomUUID() + ".thumb.jpg"),
+      previewFile = mediaReference(crypto.randomUUID() + ".preview.jpg"),
+      // Preview first: the album photo is the preview until the camera original arrives.
+      file = storedOriginal || (previewOnly ? previewFile : mediaReference(crypto.randomUUID() + ".jpg"));
     let images;
-    if (storedOriginal) {
+    if (previewOnly) {
+      images = await previewOnlyTasks(preview);
+    } else if (storedOriginal) {
       try {
         images = await storedImageTasks(storedOriginal, mirrored, preview);
       } catch (error) {
@@ -211,7 +284,7 @@ export function appendCapture(
       // Start sending the untouched JPEG while Sharp creates the small preview.
       // A bad image still rolls both writes back before it reaches the album.
       const writes = [[thumbnailFile, images.thumbnail], [previewFile, images.preview]];
-      if (!storedOriginal) writes.unshift([file, images.jpeg]);
+      if (!storedOriginal && !previewOnly) writes.unshift([file, images.jpeg]);
       const saved = await Promise.allSettled(
         writes.map(([name, task]) =>
           task.catch(() => { throw captureError(400, "Ảnh không hợp lệ. Hỗ trợ JPEG, PNG, WebP."); })
@@ -221,8 +294,8 @@ export function appendCapture(
       const failed = saved.find((result) => result.status === "rejected");
       if (failed) throw failed.reason;
       return {
-        file, thumbnailFile, previewFile, encodePrint: images.encodePrint,
-        sourcePreserved: preservesSource(await images.metadata),
+        file, thumbnailFile, previewFile, encodePrint: images.encodePrint, previewOnly,
+        sourcePreserved: previewOnly ? false : preservesSource(await images.metadata),
       };
     } catch (error) {
       // The booth's own upload stays for its retry (same token); manual cleanup covers strays.
@@ -248,8 +321,10 @@ export function appendCapture(
         previewFile: media.previewFile,
         kind: "original",
         ...(clientKey && { clientKey }),
-        mirrored: Boolean(mirrored),
+        // The preview is already flipped like the screen; the original's flip waits with it.
+        mirrored: media.previewOnly ? false : Boolean(mirrored),
         sourcePreserved: media.sourcePreserved,
+        ...(media.previewOnly && { originalPending: true, originalMirrored: Boolean(mirrored) }),
       };
       // One database round trip: number, append and expiry are computed by the database in a
       // single atomic update. The guards (status, not already saved) are part of the filter.
@@ -289,8 +364,9 @@ export function appendCapture(
           throw captureError(409, `Đã chụp đủ ${b.shots} ảnh của gói.`);
         throw captureError(409, "Phiên chụp đã kết thúc.");
       }
-      // The photo is saved: the heavy 3000 px print source follows in the background.
-      schedulePrintSource({
+      // The photo is saved: the heavy 3000 px print source follows in the background (preview
+      // first: once the camera original is attached).
+      if (!media.previewOnly) schedulePrintSource({
         bookingId,
         photoId: photo._id,
         printFile: mediaReference(crypto.randomUUID() + ".print.jpg"),

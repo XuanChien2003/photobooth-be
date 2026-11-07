@@ -54,6 +54,12 @@ export function readPhotoUpload(req, { capture = false } = {}) {
       ...(capture && { captureToken: req.get("X-Capture-Token") }),
     });
     if (!req.body.length) fail(400, "Ảnh không có dữ liệu.");
+    // Preview first, original later (X-Photo-Original: later): the body is only the booth's
+    // preview; the album shows it at once and the camera original is attached afterwards.
+    if (req.get("X-Photo-Original") === "later") {
+      if (req.body.length > MAX_BOOTH_PREVIEW_BYTES) fail(400, "Ảnh xem trước gửi kèm không hợp lệ.");
+      return { ...data, buffer: null, preview: req.body, later: true };
+    }
     // The booth already uploaded the camera original straight to storage (direct-upload.js):
     // the body is only its preview, and the token names the stored original.
     const stored = req.get("X-Photo-Stored");

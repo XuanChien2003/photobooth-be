@@ -407,6 +407,7 @@ kioskRouter.post("/photo", photoBody, async (req, res) => {
         mirrored: d.mirrored,
         precheck: b,
         preview: d.preview,
+        previewOnly: Boolean(d.later),
         storedOriginal: storedOriginal(b._id, d),
       })),
     ),

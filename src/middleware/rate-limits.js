@@ -16,7 +16,9 @@ export const apiLimit = rateLimit({
   skip: (req) =>
     req.path === "/health" ||
     /^\/(admin\/|kiosk\/(?!claim))/.test(req.path) ||
-    (req.method === "GET" && /^\/albums\//.test(req.path)),
+    (req.method === "GET" && /^\/albums\//.test(req.path)) ||
+    // Máy chụp gửi ảnh gốc sau ảnh xem trước (cả tiệm chung một IP, mỗi ảnh 2 yêu cầu); cần mã album 48 ký tự.
+    /^\/albums\/[^/]+\/photos\/original(-url)?$/.test(req.path),
 });
 
 export const sensitive = () =>

@@ -1293,6 +1293,28 @@ export const openapi = {
         responses: { ...uploadUrlResponse, ...errors(400, 404, 409) },
       },
     },
+    "/api/albums/{token}/photos/original-url": {
+      post: {
+        tags: ["Album khách"],
+        summary: "Ảnh xem trước tới trước: xin URL tải ảnh gốc của một ảnh album đã có",
+        description: "Máy chụp gửi ảnh xem trước (X-Photo-Original: later) để album có ảnh ngay, rồi gửi ảnh gốc 26 MP sau. " +
+          "Ảnh đã có ảnh gốc: { saved: true }. Kho MongoDB: 404 (gửi tệp qua POST /api/albums/{token}/photos/original). Ảnh không còn: 410.",
+        parameters: [tokenParam],
+        requestBody: body({ clientKey: str("Mã riêng của ảnh"), size: int("Số byte ảnh gốc (≤ 40 MB)") }, ["clientKey", "size"]),
+        responses: { ...uploadUrlResponse, ...errors(400, 404, 410) },
+      },
+    },
+    "/api/albums/{token}/photos/original": {
+      post: {
+        tags: ["Album khách"],
+        summary: "Gắn ảnh gốc của máy ảnh vào ảnh album đang hiện ảnh xem trước",
+        description: "JSON { clientKey, stored } sau khi tải thẳng lên R2, hoặc chính tệp JPEG (Content-Type image/jpeg) kèm X-Photo-Key. " +
+          "Trả { attached: false } khi ảnh đã có ảnh gốc (gửi lại). 410: ảnh không còn trong album; 422: tệp trên kho không dùng được.",
+        parameters: [tokenParam],
+        requestBody: body({ clientKey: str("Mã riêng của ảnh"), stored: str("Mã tệp đã tải thẳng lên kho") }, ["clientKey"]),
+        responses: { ...ok("{ attached }"), ...errors(400, 404, 410, 422) },
+      },
+    },
     "/api/albums/{token}/photos/{photo}": {
       get: {
         tags: ["Album khách"],

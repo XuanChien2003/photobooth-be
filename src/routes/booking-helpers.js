@@ -23,6 +23,8 @@ export const publicBooking = (b) => ({
       clientKey: p.clientKey || undefined,
       mirrored: Boolean(p.mirrored),
       sourcePreserved: Boolean(p.sourcePreserved),
+      // Ảnh gốc của máy ảnh chưa tới (album đang hiện ảnh xem trước 1600 px).
+      originalPending: p.originalPending ? true : undefined,
       // Có nguồn in 3000 px riêng (ảnh mới); ảnh cũ in từ ảnh gốc.
       printSource: Boolean(p.printFile),
     })),

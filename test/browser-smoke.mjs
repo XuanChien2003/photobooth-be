@@ -459,6 +459,16 @@ try {
     return b.photos.length === 2 && b.composite?.file ? b : null;
   }, "ảnh gốc và ảnh ghép khung lên album");
   assert.deepEqual(album.photos.map((p) => p.number), [1, 2]);
+  // Ảnh xem trước tới trước (album có ảnh ngay), ảnh gốc của máy ảnh tới sau và thay vào (kho MongoDB:
+  // gửi qua máy chủ), sau lệnh in và ảnh ghép.
+  const withOriginals = await until(async () => {
+    const b = await Booking.findById(booking._id);
+    return b.photos.every((p) => !p.originalPending && p.file !== p.previewFile) ? b : null;
+  }, "ảnh gốc của máy ảnh gắn vào album", 60000);
+  for (const photo of withOriginals.photos) {
+    assert.equal(photo.sourcePreserved, true);
+    assert.equal((await sharp(await readMedia(photo.file)).metadata()).width, 1500);
+  }
   // Ảnh ghép trên máy chủ đúng như khách thấy: ảnh trong ô trắng đen, nhãn dán vẫn xanh, viền khung
   // giữ màu hồng.
   {

@@ -1183,3 +1183,57 @@ test("a booth uploads the timelapse video straight to storage; the server only c
     await ticket({ type: "video/mp4", size: 10 }).expect(404);
   } finally { signer.mock.restore(); }
 });
+
+test("preview first on R2: the album shows the preview at once, then the camera original goes straight to storage and is attached", async () => {
+  enableR2();
+  const { cleanJpegMetadata } = await import("../src/services/jpeg-metadata.js");
+  const sessionId = "preview-first-session";
+  const b = await Booking.create({
+    code: randomUUID(), accessToken: randomUUID(), status: "checked_in",
+    captureStartedAt: new Date(), captureEndsAt: new Date(Date.now() + 600000), captureSession: sessionId,
+  });
+  const captureToken = jwt.sign({ type: "capture", booking: String(b._id), sessionId }, config.secret);
+  const camera = await sharp({ create: { width: 900, height: 600, channels: 3, background: "#3a6b8c" } })
+    .withMetadata({ orientation: 6, exif: { IFD0: { Make: "FUJIFILM", Artist: "private" } } })
+    .jpeg({ quality: 90 }).toBuffer();
+  const cleaned = cleanJpegMetadata(camera, 6);
+  const preview = await sharp(camera).rotate().resize(1067, 1600).jpeg().toBuffer();
+  const puts = [];
+  const signer = mock.method(r2Storage, "signedPut", async (file, seconds, type, size) => {
+    puts.push({ file, seconds, type, size });
+    return `https://test-media.${"a".repeat(32)}.r2.cloudflarestorage.com/${file.slice(3)}?X-Amz-Signature=test`;
+  });
+  const albumPath = `/api/albums/${b.accessToken}/photos`;
+  try {
+    // 1) Ảnh xem trước: chỉ ~0,3 MB qua máy chủ, album có ảnh ngay.
+    await request(app).post("/api/kiosk/photo").set("Content-Type", "image/jpeg").set("X-Capture-Token", captureToken)
+      .set("X-Photo-Key", "early-photo-1").set("X-Photo-Mirrored", "0").set("X-Photo-Original", "later")
+      .send(preview).expect(200);
+    const pending = (await Booking.findById(b._id)).photos[0];
+    assert.equal(pending.originalPending, true);
+    assert.equal(pending.file, pending.previewFile);
+    // Khách bấm Chụp xong: ảnh gốc vẫn gắn được vào album sau đó.
+    await Booking.updateOne({ _id: b._id }, { status: "completed" });
+    // 2) Ảnh gốc thẳng lên kho R2 (máy chủ không nhận 15 MB), rồi gắn vào ảnh.
+    const { body: ticket } = await request(app).post(`${albumPath}/original-url`)
+      .send({ clientKey: "early-photo-1", size: cleaned.length }).expect(200);
+    assert.equal(puts.at(-1).size, cleaned.length);
+    const file = puts.at(-1).file;
+    objects.set(file.slice(3), { bytes: Buffer.from(cleaned), type: "image/jpeg", modified: Date.now() });
+    calls = [];
+    await request(app).post(`${albumPath}/original`)
+      .send({ clientKey: "early-photo-1", stored: ticket.upload.stored.slice(0, -1) + "A" }).expect(422);
+    assert.deepEqual((await request(app).post(`${albumPath}/original`)
+      .send({ clientKey: "early-photo-1", stored: ticket.upload.stored }).expect(200)).body, { attached: true });
+    const photo = (await Booking.findById(b._id)).photos[0];
+    assert.equal(photo.file, file, "the stored original becomes the photo");
+    assert.deepEqual([photo.originalPending, photo.sourcePreserved], [undefined, true]);
+    assert.equal(calls.filter((c) => c.type === "PutObjectCommand").length, 0, "the server never re-uploads the original");
+    await whenPrintSourcesIdle();
+    const print = await sharp(objects.get((await Booking.findById(b._id)).photos[0].printFile.slice(3)).bytes).metadata();
+    assert.deepEqual([print.width, print.height], [600, 900], "the print source comes from the camera pixels, upright");
+    // Đã có ảnh gốc: xin URL lần nữa không tải lại.
+    assert.deepEqual((await request(app).post(`${albumPath}/original-url`)
+      .send({ clientKey: "early-photo-1", size: cleaned.length }).expect(200)).body, { saved: true });
+  } finally { signer.mock.restore(); }
+});

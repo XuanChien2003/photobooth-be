@@ -209,3 +209,50 @@ test("a preview that is not the same picture is ignored, and malformed preview l
       .set("X-Photo-Preview-Length", length).send(camera).expect(400);
   await whenPrintSourcesIdle();
 });
+
+test("preview first: the album shows the photo from the booth preview at once, the camera original is attached later", async () => {
+  const b = await booking("checked_in");
+  const captureToken = jwt.sign({ type: "capture", booking: String(b._id) }, config.secret);
+  const camera = await solid(3600, 2400, "#1030d0", 95);
+  const preview = await solid(1600, 1067, "#d01020");
+  const later = (key, body = preview) => request(app).post("/api/kiosk/photo")
+    .set("Content-Type", "image/jpeg").set("X-Photo-Key", key).set("X-Photo-Original", "later")
+    .set("X-Photo-Mirrored", "1").set("X-Capture-Token", captureToken).send(body);
+  // Bước 1: chỉ ảnh xem trước (~0,3 MB) — album có ảnh ngay, chưa cần ảnh gốc 15 MB.
+  const first = await later("preview-first-01").expect(200);
+  assert.equal(first.body.photos.length, 1);
+  let saved = (await Booking.findById(b._id)).photos[0];
+  assert.equal(saved.file, saved.previewFile, "the preview stands in for the original meanwhile");
+  assert.deepEqual(await readMedia(saved.previewFile), preview);
+  assert.deepEqual([saved.originalPending, saved.mirrored, saved.originalMirrored], [true, false, true],
+    "the preview is already flipped like the screen; the original's flip waits with it");
+  const album = (await request(app).get(`/api/albums/${b.accessToken}`).expect(200)).body;
+  assert.equal(album.photos[0].originalPending, true);
+  await whenPrintSourcesIdle();
+  assert.equal((await Booking.findById(b._id)).photos[0].printFile, undefined, "no print source from a preview");
+  // Ảnh xem trước không hợp lệ (quá to / không phải JPEG) không tạo ảnh.
+  await later("preview-first-bad", await solid(3600, 2400, "#000000")).expect(400);
+  // Bước 2: ảnh gốc. Kho MongoDB không tải thẳng được: 404 → gửi tệp qua máy chủ.
+  const albumPath = `/api/albums/${b.accessToken}/photos`;
+  await request(app).post(`${albumPath}/original-url`).send({ clientKey: "preview-first-01", size: camera.length }).expect(404);
+  await request(app).post(`${albumPath}/original-url`).send({ clientKey: "never-taken-01", size: camera.length }).expect(410);
+  const attach = () => request(app).post(`${albumPath}/original`)
+    .set("Content-Type", "image/jpeg").set("X-Photo-Key", "preview-first-01").send(camera);
+  assert.deepEqual((await attach().expect(200)).body, { attached: true });
+  saved = (await Booking.findById(b._id)).photos[0];
+  assert.notEqual(saved.file, saved.previewFile);
+  assert.deepEqual(await readMedia(saved.file), camera, "the camera file is kept byte for byte");
+  assert.deepEqual(await readMedia(saved.previewFile), preview, "the album keeps showing the same preview");
+  assert.deepEqual([saved.originalPending, saved.mirrored, saved.originalMirrored, saved.sourcePreserved],
+    [undefined, true, undefined, true]);
+  // Gửi lại (mất phản hồi): không thay ảnh lần nữa.
+  assert.deepEqual((await attach().expect(200)).body, { attached: false });
+  await request(app).post(`${albumPath}/original`).set("Content-Type", "image/jpeg")
+    .set("X-Photo-Key", "never-taken-01").send(camera).expect(410);
+  await whenPrintSourcesIdle();
+  const print = await sharp(await readMedia((await Booking.findById(b._id)).photos[0].printFile))
+    .raw().toBuffer({ resolveWithObject: true });
+  assert.deepEqual([print.info.width, print.info.height], [3000, 2000]);
+  assert.ok(print.data[2] > 150 && print.data[0] < 90, "the print source comes from the camera original");
+  assert.equal((await request(app).get(`/api/albums/${b.accessToken}`).expect(200)).body.photos[0].originalPending, undefined);
+});
