@@ -104,7 +104,7 @@ thì không khớp và trình duyệt chặn tải lên):
 ```json
 [
   {
-    "AllowedOrigins": ["https://mellowfoto.com", "https://photobooth.ngathanh.workers.dev", "http://localhost:5173"],
+    "AllowedOrigins": ["https://mellowptb.com", "https://photobooth.ngathanh.workers.dev", "http://localhost:5173"],
     "AllowedMethods": ["GET", "HEAD", "PUT"],
     "AllowedHeaders": ["Range", "Content-Type"],
     "ExposeHeaders": ["Content-Length", "Content-Type", "Content-Range"],
