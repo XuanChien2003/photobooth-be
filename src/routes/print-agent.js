@@ -1,11 +1,12 @@
 import crypto from "node:crypto";
 import { Router } from "express";
+import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { config } from "../config.js";
 import { PrintJob } from "../models/index.js";
 import { MEDIA_TTL_MS, sendMedia } from "../services/media.js";
 import { printContentType } from "../services/print-image.js";
-import { noteAgent, savePrinterStatus } from "../services/printer-status.js";
+import { noteAgent, noteRoomAgent, savePrinterStatus, saveRoomPrinterStatus } from "../services/printer-status.js";
 import { printEvents } from "../services/print-events.js";
 import { publicJob } from "./print-helpers.js";
 import { fail, id } from "./validation.js";
@@ -13,33 +14,52 @@ import { fail, id } from "./validation.js";
 export const printAgentRouter = Router();
 const LEASE_MS = 5 * 60 * 1000;
 
+// Hai loại mã: PRINT_AGENT_TOKEN chung (agent Node cũ, nhận lệnh cả chi nhánh), hoặc mã máy in của
+// một phòng (Quản lý máy → Cài máy chụp → Máy in DNP): chỉ nhận lệnh in của đúng phòng đó, nên mỗi
+// mini PC cắm máy DNP chỉ in ảnh của phòng mình.
 printAgentRouter.use((req, res, next) => {
+  const raw = (req.get("Authorization") || "").replace(/^Bearer /i, "");
   const expected = Buffer.from(config.printAgentToken);
-  const supplied = Buffer.from((req.get("Authorization") || "").replace(/^Bearer /i, ""));
-  if (expected.length < 32 || supplied.length !== expected.length ||
-    !crypto.timingSafeEqual(supplied, expected))
-    return res.status(403).json({ message: "Print agent chưa được cấp quyền." });
-  next();
+  const supplied = Buffer.from(raw);
+  if (expected.length >= 32 && supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected)) {
+    req.printScope = null;
+    return next();
+  }
+  try {
+    const payload = jwt.verify(raw, config.secret);
+    if (payload.type === "print-agent" && /^[a-f\d]{24}$/i.test(String(payload.room)) &&
+      typeof payload.branch === "string") {
+      req.printScope = { room: String(payload.room), branch: String(payload.branch) };
+      return next();
+    }
+  } catch { /* không phải mã máy in hợp lệ */ }
+  return res.status(403).json({ message: "Print agent chưa được cấp quyền." });
 });
+// Lệnh in agent này được thấy: của phòng (mã máy in phòng) hoặc của chi nhánh (mã chung).
+const scopeFilter = (req, branch) => (req.printScope ? { room: req.printScope.room } : { branch });
 
 const PRINT_SIZES = ["full", "strip", "instax"];
 printAgentRouter.post("/claim", async (req, res) => {
-  const { branch, printSizes } = z.object({
-    branch: z.string().trim().min(1).max(200),
+  const body = z.object({
+    branch: z.string().trim().min(1).max(200).optional(),
     // Khổ máy in cạnh agent này in được (DNP: full + strip, Instax: instax). Không gửi = mọi khổ.
     printSizes: z.array(z.enum(PRINT_SIZES)).min(1).max(3).optional(),
   }).parse(req.body);
+  const { printSizes } = body;
+  const branch = req.printScope ? req.printScope.branch : body.branch;
+  if (!req.printScope && !branch) fail(400, "Thiếu chi nhánh của máy in.");
+  const scope = scopeFilter(req, branch);
   const now = new Date();
   // An expired lease has uncertain physical outcome. Require a human check
   // before resending so a lost acknowledgement cannot print a second copy.
-  await PrintJob.updateMany({ branch, status: "pending", spoolStatus: "sending",
+  await PrintJob.updateMany({ ...scope, status: "pending", spoolStatus: "sending",
     spoolLeaseUntil: { $lte: now } }, { $set: { spoolStatus: "failed",
       spoolMessage: "Mất xác nhận từ máy in; kiểm tra giấy trước khi gửi lại." } });
   const leaseId = crypto.randomUUID();
   const sizes = printSizes && [...new Set(printSizes)];
-  await noteAgent(branch, sizes).catch(() => {});
+  await (req.printScope ? noteRoomAgent(req.printScope, sizes) : noteAgent(branch, sizes)).catch(() => {});
   const job = await PrintJob.findOneAndUpdate({
-    branch, status: "pending", spoolStatus: "queued",
+    ...scope, status: "pending", spoolStatus: "queued",
     createdAt: { $gt: new Date(now.getTime() - MEDIA_TTL_MS) },
     // Lệnh in cũ không ghi khổ là khổ to.
     ...(sizes && { printSize: sizes.includes("full") ? { $in: [...sizes, null] } : { $in: sizes } }),
@@ -56,6 +76,7 @@ printAgentRouter.post("/claim", async (req, res) => {
 
 printAgentRouter.get("/jobs/:id/sheets/:index", async (req, res) => {
   const job = await PrintJob.findOne({ _id: id.parse(req.params.id),
+    ...(req.printScope && { room: req.printScope.room }),
     spoolLeaseId: z.uuid().parse(req.get("X-Print-Lease")),
     spoolStatus: "sending", spoolLeaseUntil: { $gt: new Date() } })
     .select("+spoolLeaseId");
@@ -71,6 +92,7 @@ printAgentRouter.post("/jobs/:id/complete", async (req, res) => {
     leaseId: z.uuid(), sent: z.boolean(), message: z.string().max(500).default(""),
   }).parse(req.body);
   const job = await PrintJob.findOneAndUpdate({ _id: id.parse(req.params.id),
+    ...(req.printScope && { room: req.printScope.room }),
     spoolLeaseId: leaseId, spoolStatus: "sending" }, { $set: {
       spoolStatus: sent ? "sent" : "failed",
       spoolMessage: sent ? (message || "Đã gửi đến hàng đợi máy in tại tiệm.") :
@@ -86,7 +108,7 @@ printAgentRouter.post("/jobs/:id/complete", async (req, res) => {
 // máy in còn kết nối và đủ phim.
 printAgentRouter.post("/status", async (req, res) => {
   const d = z.object({
-    branch: z.string().trim().min(1).max(200),
+    branch: z.string().trim().min(1).max(200).optional(),
     instax: z.object({
       connected: z.boolean(),
       film: z.number().int().min(0).max(100).nullable().default(null),
@@ -94,7 +116,24 @@ printAgentRouter.post("/status", async (req, res) => {
       charging: z.boolean().default(false),
       message: z.string().max(300).default(""),
     }).optional(),
+    // Máy DNP của phòng (chương trình in của phòng báo mỗi phút): tên hàng in Windows, trạng thái,
+    // số tờ đang chờ, cách cắt đôi tờ nhỏ (auto: đã tự bật 2inch cut; queue: hàng in cắt đôi riêng,
+    // nhân viên bật 2inch cut một lần; none: chưa có — tờ nhỏ ra nguyên tờ, cần tự cắt).
+    dnp: z.object({
+      printer: z.string().max(200).default(""),
+      stripPrinter: z.string().max(200).default(""),
+      ready: z.boolean(),
+      state: z.string().max(120).default(""),
+      jobs: z.number().int().min(0).max(10000).default(0),
+      cut: z.enum(["auto", "queue", "none"]).default("none"),
+    }).optional(),
   }).parse(req.body);
+  if (req.printScope) {
+    if (d.dnp) await saveRoomPrinterStatus(req.printScope, d.dnp);
+    else await noteRoomAgent(req.printScope);
+    return res.json({ ok: true });
+  }
+  if (!d.branch) fail(400, "Thiếu chi nhánh của máy in.");
   await savePrinterStatus(d.branch, d.instax ? { instax: d.instax } : {});
   res.json({ ok: true });
 });

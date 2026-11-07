@@ -60,6 +60,26 @@ adminRouter.post("/rooms/:id/device", allow("rooms:setup"), async (req, res) => 
     name: room.name,
   });
 });
+// Cài máy in DNP của phòng Photobooth: mã cho chương trình in trên mini PC của phòng (máy cắm DNP).
+// Mã chỉ nhận lệnh in của đúng phòng này (routes/print-agent.js). Phòng Polaroid in Instax qua agent riêng.
+adminRouter.post("/rooms/:id/printer", allow("rooms:setup"), async (req, res) => {
+  const room = await Room.findById(id.parse(req.params.id));
+  if (!room) fail(404, "Không tìm thấy phòng.");
+  if (!room.active) fail(409, "Phòng chụp đã ngừng hoạt động.");
+  requireBranch(req, room.branch);
+  if ((room.kind || "photobooth") !== "photobooth")
+    fail(409, "Phòng Polaroid in ra máy Instax, không dùng máy in DNP.");
+  res.json({
+    name: room.name,
+    branch: room.branch,
+    token: jwt.sign(
+      { type: "print-agent", room: String(room._id), branch: room.branch, jti: crypto.randomUUID() },
+      config.secret,
+      // Như liên kết máy chụp: 1 năm, tải lại file cài khi hết hạn.
+      { expiresIn: "365d" },
+    ),
+  });
+});
 adminRouter.use("/settings", settingsRouter);
 adminRouter.use(studioRouter);
 adminRouter.use(resourcesRouter);

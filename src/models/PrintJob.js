@@ -8,6 +8,9 @@ const printJobSchema = new Schema(
     code: String,
     name: String,
     roomName: String,
+    // Phòng chụp của lượt chụp: máy in DNP cài cho phòng (Quản lý máy → Cài máy in) chỉ nhận lệnh
+    // của đúng phòng đó.
+    room: { type: Schema.Types.ObjectId, ref: "Room" },
     branch: String,
     copies: Number,
     frameName: String,
@@ -34,5 +37,6 @@ const printJobSchema = new Schema(
 );
 
 printJobSchema.index({ status: 1, createdAt: -1 });
+printJobSchema.index({ room: 1, status: 1, spoolStatus: 1, createdAt: 1 });
 
 export default mongoose.model("PrintJob", printJobSchema, "print_jobs");

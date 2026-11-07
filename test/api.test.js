@@ -28,6 +28,7 @@ import {
   Sticker,
 } from "../src/models/index.js";
 import { printEvents } from "../src/services/print-events.js";
+import { initialSpoolStatus } from "../src/services/printer-status.js";
 import { backfillImageHashes, hashImage } from "../src/services/frame-image.js";
 import {
   FINISH_GRACE_MS,
@@ -477,6 +478,62 @@ test("a Windows print agent leases one branch job once and reports spool dispatc
   } finally {
     config.printAgentToken = previous;
     await PrintJob.deleteOne({ _id: job._id });
+  }
+});
+
+test("a room's DNP printer token prints only that room's jobs and reports the printer to the admin", async () => {
+  const previous = config.printAgentToken;
+  config.printAgentToken = "";
+  const other = await Room.create({ name: "Phòng bên", branch: "Test branch", active: true });
+  const polaroid = await Room.create({ name: "Phòng Polaroid", branch: "Test branch", active: true, kind: "polaroid" });
+  const file = `room-agent-${randomUUID()}.jpg`;
+  await saveMedia(file, await sharp({ create: { width: 12, height: 18, channels: 3, background: "#cceeaa" } })
+    .jpeg().toBuffer(), "image/jpeg");
+  const make = (target, printSize) => PrintJob.create({ branch: "Test branch", room: target._id, code: "939393",
+    file, sheets: [{ file }], printSize, copies: 1, status: "pending", spoolStatus: "queued" });
+  try {
+    // Chưa có chương trình in của phòng: lệnh in mới chờ nhân viên in tay.
+    assert.equal(await initialSpoolStatus(room._id), "idle");
+    await staff.post(`/api/admin/rooms/${polaroid._id}/printer`).send({}).expect(409);
+    const issued = (await staff.post(`/api/admin/rooms/${room._id}/printer`).send({}).expect(200)).body;
+    assert.deepEqual([issued.name, issued.branch], ["Test room", "Test branch"]);
+    const payload = jwt.verify(issued.token, config.secret);
+    assert.deepEqual([payload.type, payload.room], ["print-agent", String(room._id)]);
+    const auth = { Authorization: `Bearer ${issued.token}` };
+    // Mã máy chụp không dùng làm mã máy in được.
+    const kioskToken = jwt.sign({ type: "kiosk", room: String(room._id) }, config.secret);
+    await request(app).post("/api/print-agent/claim").set({ Authorization: `Bearer ${kioskToken}` }).send({}).expect(403);
+    const mine = await make(room, "strip"), theirs = await make(other, "full");
+    // Không cần gửi chi nhánh; không bao giờ nhận lệnh của phòng khác cùng chi nhánh.
+    const leased = (await request(app).post("/api/print-agent/claim").set(auth)
+      .send({ printSizes: ["full", "strip"] }).expect(200)).body.job;
+    assert.deepEqual([leased.id, leased.printSize], [String(mine._id), "strip"]);
+    assert.equal((await request(app).post("/api/print-agent/claim").set(auth).send({}).expect(200)).body.job, null);
+    assert.equal((await PrintJob.findById(theirs._id)).spoolStatus, "queued");
+    await request(app).get(`/api/print-agent/jobs/${mine._id}/sheets/0`).set(auth)
+      .set("X-Print-Lease", leased.leaseId).expect(200);
+    await request(app).post(`/api/print-agent/jobs/${mine._id}/complete`).set(auth)
+      .send({ leaseId: leased.leaseId, sent: true, message: "Đã gửi 1 tờ tới máy DNP (PR (4x6)), tờ nhỏ qua hàng in cắt đôi 2 inch." })
+      .expect(200);
+    assert.equal((await PrintJob.findById(mine._id)).spoolStatus, "sent");
+    // Đã có chương trình in: lệnh in mới của phòng vào hàng chờ để máy in tự in; phòng khác thì chưa.
+    assert.equal(await initialSpoolStatus(room._id), "queued");
+    assert.equal(await initialSpoolStatus(other._id), "idle");
+    await request(app).post("/api/print-agent/status").set(auth).send({ dnp: {
+      printer: "DS-RX1", stripPrinter: "DS-RX1 - cat doi 2x6", ready: false,
+      state: "Mất kết nối (máy in tắt hoặc rút cáp USB)", jobs: 2, cut: "queue",
+    } }).expect(200);
+    const rows = (await staff.get("/api/admin/print-jobs/printers").expect(200)).body;
+    const row = rows.find((entry) => entry.room === String(room._id));
+    assert.equal(row.roomName, "Test room");
+    assert.equal(row.agent.running, true);
+    assert.deepEqual([row.dnp.ready, row.dnp.state, row.dnp.jobs, row.dnp.cut],
+      [false, "Mất kết nối (máy in tắt hoặc rút cáp USB)", 2, "queue"]);
+  } finally {
+    config.printAgentToken = previous;
+    await PrintJob.deleteMany({ code: "939393" });
+    await Room.deleteMany({ _id: { $in: [other._id, polaroid._id] } });
+    await Setting.collection.deleteMany({ key: /^printers:room:/ });
   }
 });
 

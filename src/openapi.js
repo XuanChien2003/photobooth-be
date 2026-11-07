@@ -1019,9 +1019,14 @@ export const openapi = {
     "/api/print-agent/claim": {
       post: {
         tags: ["Máy in tại tiệm"],
-        summary: "Máy in tại tiệm (Windows / Mac) nhận một lệnh in thuộc chi nhánh",
-        description: "Dùng Authorization: Bearer PRINT_AGENT_TOKEN; mỗi lệnh được cấp một lease 5 phút.",
-        requestBody: body({ branch: str("Chi nhánh đặt máy in") }, ["branch"]),
+        summary: "Máy in tại tiệm nhận một lệnh in (của một phòng, hoặc của cả chi nhánh)",
+        description: "Authorization: Bearer <mã máy in của phòng> (POST /api/admin/rooms/{id}/printer — chỉ nhận lệnh in của " +
+          "đúng phòng đó, không cần branch) hoặc Bearer PRINT_AGENT_TOKEN (agent chung, nhận lệnh của chi nhánh `branch`). " +
+          "printSizes: khổ máy in cạnh agent in được (full / strip / instax). Mỗi lệnh được cấp một lease 5 phút.",
+        requestBody: body({
+          branch: str("Chi nhánh đặt máy in (chỉ với PRINT_AGENT_TOKEN)"),
+          printSizes: { type: "array", items: enumOf(["full", "strip", "instax"]) },
+        }, []),
         responses: { ...ok("Lệnh in hoặc job: null"), ...errors(400, 403) },
       },
     },
@@ -1606,6 +1611,21 @@ export const openapi = {
               paymentTest: { type: "boolean" },
             }),
           ),
+          ...errors(400, 401, 403, 404, 409),
+        },
+      },
+    },
+    "/api/admin/rooms/{id}/printer": {
+      post: {
+        tags: ["Danh mục & cài đặt"],
+        summary: "Lấy mã máy in DNP của phòng Photobooth — dùng cho File cài máy in",
+        description:
+          "Lễ tân (quyền Cài máy chụp) và quản trị. Mã (hạn 1 năm) để chương trình in trên mini PC của phòng nhận lệnh in " +
+          "của đúng phòng này ở /api/print-agent/*: tờ to in nguyên tờ, tờ nhỏ qua hàng in cắt đôi 2 inch. Phòng Polaroid: 409.",
+        security: loggedIn,
+        parameters: [pathParam("id", "Mã phòng")],
+        responses: {
+          ...ok("Mã máy in", object({ token: { type: "string" }, name: { type: "string" }, branch: { type: "string" } })),
           ...errors(400, 401, 403, 404, 409),
         },
       },

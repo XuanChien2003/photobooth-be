@@ -1,7 +1,6 @@
 import { Router } from "express";
 import mongoose from "mongoose";
 import { z } from "zod";
-import { config } from "../config.js";
 import { mediaReference } from "../services/r2.js";
 import { Booking, PrintJob } from "../models/index.js";
 import { appendCapture } from "../services/capture.js";
@@ -20,6 +19,7 @@ import { sendZip } from "../services/zip.js";
 import { sheetPreview } from "../services/preview.js";
 import { printEvents } from "../services/print-events.js";
 import { dispatchPrint } from "../services/dnp.js";
+import { initialSpoolStatus } from "../services/printer-status.js";
 import { printExtension, printContentType, validatePrintImage } from "../services/print-image.js";
 import { printLimit } from "../middleware/rate-limits.js";
 import { fail, id, token } from "./validation.js";
@@ -267,6 +267,7 @@ albumsRouter.post("/:token/print-pack", printLimit, printBody, async (req, res) 
       code: b.code,
       name: b.name,
       roomName: b.roomName,
+      room: b.room,
       branch: b.branch,
       printSize: b.printSize || "full",
       copies: 1,
@@ -277,7 +278,7 @@ albumsRouter.post("/:token/print-pack", printLimit, printBody, async (req, res) 
       height: sheets[0].height,
       requestKey: d.requestKey,
       requestFingerprint: fingerprint,
-      spoolStatus: config.dnpPrinter || config.printAgentToken ? "queued" : "idle",
+      spoolStatus: await initialSpoolStatus(b.room),
     });
     dispatchPrint(job);
     printEvents.emit("print", { ...publicJob(job, req.params.token), branch: b.branch });

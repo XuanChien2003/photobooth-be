@@ -1,9 +1,9 @@
 import { Router } from "express";
 import { z } from "zod";
-import { config } from "../../config.js";
 import { Booking, PrintJob, Room, Setting } from "../../models/index.js";
 import { allow, can, hideMoney, requireBranch, staffBranch } from "../../middleware/auth.js";
 import { dispatchPrint } from "../../services/dnp.js";
+import { initialSpoolStatus } from "../../services/printer-status.js";
 import { MEDIA_TTL_MS, photoExpiry } from "../../services/media.js";
 import { printEvents } from "../../services/print-events.js";
 import { fail, id, date } from "../validation.js";
@@ -247,7 +247,7 @@ bookingsRouter.post("/bookings/:id/reprint", allow("print:operate"), async (req,
     })
     .parse(req.body);
   const booking = await Booking.findById(id.parse(req.params.id)).select(
-    "+accessToken branch code name roomName",
+    "+accessToken branch code name roomName room",
   );
   if (!booking) fail(404, "Không tìm thấy đơn hàng.");
   requireBranch(req, booking.branch);
@@ -262,6 +262,7 @@ bookingsRouter.post("/bookings/:id/reprint", allow("print:operate"), async (req,
     code: booking.code,
     name: booking.name,
     roomName: booking.roomName,
+    room: booking.room,
     branch: booking.branch,
     copies: d.copies,
     frameName: source.frameName,
@@ -270,8 +271,7 @@ bookingsRouter.post("/bookings/:id/reprint", allow("print:operate"), async (req,
     sheets: source.sheets,
     width: source.width,
     height: source.height,
-    spoolStatus:
-      config.dnpPrinter || config.printAgentToken ? "queued" : "idle",
+    spoolStatus: await initialSpoolStatus(booking.room),
   });
   dispatchPrint(job);
   const output = publicJob(job, booking.accessToken);

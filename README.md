@@ -200,8 +200,22 @@ Các file liên quan: `src/services/media-storage.js`, `src/routes/admin/storage
 ## Thiết bị ở tiệm (máy Windows hoặc Mac)
 
 - Máy in của tiệm: **DNP DS-RX1**, giấy **PR (4x6)** = ảnh 15 × 10 cm (152 × 102 mm).
-- In tự động (máy chủ trên Render): máy chụp bấm "In ảnh" → lệnh in lên máy chủ → **print agent** chạy trên
-  máy cắm DNP tự nhận lệnh và in. Windows: `scripts/print-dnp.ps1` chọn khổ 4x6 của driver. Mac:
+- **In tự động theo phòng (cách chính, Windows):** máy DNP cắm vào mini PC của phòng Photobooth. Quản lý máy →
+  "Cài máy chụp" của phòng → **"File cài máy in (Windows)"** → chạy file `cai-may-in-<phòng>.bat` một lần trên mini PC
+  đó (Windows hỏi quyền quản trị → Yes). Không cần Node.js: file chứa sẵn chương trình in PowerShell
+  (`photobooth-fe/src/admin/installers/print-agent-dnp.ps1`) và mã máy in của phòng (`POST /api/admin/rooms/{id}/printer`,
+  JWT hạn 1 năm, chỉ nhận lệnh in của đúng phòng đó). Phần cài đặt: tìm hàng in DNP, tạo hàng in thứ hai
+  `<tên máy> - cat doi 2x6` cùng driver / cổng, tự bật **2inch cut** cho hàng đó qua PrintTicket nếu driver cho phép
+  (không thì mở cửa sổ cài đặt in để bật tay một lần: Advanced… → Printer Features → 2inch cut → Enable), lưu cấu hình
+  vào `%LOCALAPPDATA%\NXC-Printer` và tự chạy ẩn mỗi lần bật máy. Sau đó khách bấm "In ảnh" là máy in tự in (máy
+  hỏi lệnh mỗi 3 giây): **tờ to** in nguyên tờ 10 × 15 ở hàng in chính, **tờ nhỏ** (2 dải 5 × 15 trên một tờ) in qua
+  hàng in cắt đôi để máy tự cắt thành 2 dải. Quản lý máy → "Máy in tự động" hiện từng phòng: chương trình in có chạy
+  không, máy in sẵn sàng / mất kết nối / hết giấy, số tờ đang chờ. Lệnh in của phòng chỉ vào hàng chờ tự in khi phòng
+  đã có chương trình in (từng báo về); trước đó lệnh in để nhân viên in tay. Nhật ký:
+  `%LOCALAPPDATA%\NXC-Printer\print-agent.log`; kiểm tra máy in / khổ giấy / tuỳ chọn cắt của driver (chỉ xem):
+  `powershell -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\NXC-Printer\print-agent.ps1" -Diagnose`.
+- In tự động bằng print agent Node (cách cũ, cả chi nhánh; Mac; Instax): máy chụp bấm "In ảnh" → lệnh in lên máy
+  chủ → **print agent** chạy trên máy cắm máy in tự nhận lệnh và in. Windows: `scripts/print-dnp.ps1` chọn khổ 4x6 của driver. Mac:
   `scripts/print-cups.js` in qua CUPS (`lp`), chọn khổ 4x6 trong PageSize của driver (hàng in đã đặt sẵn khổ
   4x6 / 2inch cut thì giữ). Tờ khác chiều với khổ giấy tự xoay.
   1. Trên Render đặt `PRINT_AGENT_TOKEN` (chuỗi ngẫu nhiên ≥ 32 ký tự).
