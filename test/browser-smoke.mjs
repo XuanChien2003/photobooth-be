@@ -506,7 +506,7 @@ try {
     ["Ảnh ghép khung", "Video tua nhanh", "Ảnh 1", "Ảnh 2"],
   );
   await phone.waitForFunction(() => {
-    const image = document.querySelector(".album-viewer-stage img");
+    const image = document.querySelector(".album-viewer-stage img.album-viewer-main");
     return image?.complete && image.naturalWidth > 0;
   });
   await phone.getByText(`#${booking.code}`, { exact: true }).waitFor();
